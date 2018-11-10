@@ -1,26 +1,32 @@
 (
+s.options.numOutputBusChannels_(4);
 s.waitForBoot({
 	// Parameters
-	var sndPath;
+	var sndPath, oscDefKey, soundInPort, recordingDur;
 	// Kernels
-	var diffuseEncoder, binauralDecoder;
+	var diffuseEncoder, omniEncoder, binauralDecoder;
 	// Buffers
-	var sounds;
+	var sounds, voiceRecBuf;
 	// Busses
-	var voiceSpatializerBus, decoderBus;
+	var voiceSpatializerBus, positionBus, decoderBus;
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, decoderGroup;
 	// Synth defs
-	var pulseSynth, decoderSynth, spatializerSynth;
+	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
+	var breathSynth;
 	// Routines / sections
 	var scoreRoutine, pulseBreathRoutine;
 
 	// Parameters -------------------------------------
 	sndPath = "../res/".resolveRelative;
+	oscDefKey = \oscDef;
+	soundInPort = 0;
+	recordingDur = 60 * 60;
 
 	// Kernels
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
-	binauralDecoder = FoaDecoderKernel.newSpherical;
+	omniEncoder = FoaEncoderMatrix.newOmni;
+	binauralDecoder = FoaDecoderKernel.newListen;
 	s.sync;
 
 	// Buffers ----------------------------------------
@@ -32,9 +38,12 @@ s.waitForBoot({
 		sounds.put(bufferPath.basename.splitext[0], buffer);
 	};
 
+	voiceRecBuf = CtkBuffer.buffer(recordingDur * s.sampleRate, 1, s).load;
+
 	// Busses -----------------------------------------
-	decoderBus = CtkAudio.new(4);
 	voiceSpatializerBus = CtkAudio.new(4);
+	positionBus = CtkControl.new(3);
+	decoderBus = CtkAudio.new(4);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -53,19 +62,50 @@ s.waitForBoot({
 		var numBufChannels;
 		var out;
 		var dur;
-		var env;
 
 		numBufChannels = 1;
 		dur = BufDur.ir(pulseBuffer);
 
-
-		env = (LFSaw.ar(-1 * rate / dur, 1) / 2.5 + 0.6).pow(2);
 		out = PlayBuf.ar(numBufChannels, pulseBuffer, rate, loop: 1);
-		out = out * env * gain.dbamp;
-		out = FoaEncode.ar(out, diffuseEncoder);
+		out = out * gain.dbamp;
+		out = FoaEncode.ar(out, omniEncoder);
 
 		Out.ar(outBus, out);
 	});
+
+	breathSynth = CtkSynthDef.new(\breathSynth, {
+		arg gain, buffer, outBus;
+
+		var maxReadDelay, readDelay, grainFreq, rate;
+		var signal, pos, impulse, gdur, ratePos, out;
+
+		maxReadDelay = 2;
+		readDelay = ControlDur.ir;
+		grainFreq = 100;
+		rate = 1.0;
+
+		// Get the microphone input
+		signal = SoundIn.ar(soundInPort);
+
+		// record the microphone input
+		RecordBuf.ar(signal, buffer);
+		pos = DelayC.ar(Delay1.ar(Line.ar(0, 1, BufDur.ir(buffer))), maxReadDelay, readDelay);
+
+		// granular synthesis calculations
+		impulse = Impulse.ar(grainFreq);
+		gdur = 2 / grainFreq;
+		ratePos = ratePos = (pos - (max(0, rate - 1) * gdur * SampleRate.ir / BufSamples.ir(buffer))) % 1;
+
+		// granular synthesis
+		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, ratePos);
+
+		// Ambisonic encode
+		out = FoaEncode.ar(out, diffuseEncoder);
+		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
+
+		Out.ar(outBus, out);
+	});
+
 
 	decoderSynth = CtkSynthDef.new(\decoderSynth, {
 		arg inBus;
@@ -74,18 +114,39 @@ s.waitForBoot({
 
 		outBus = 0;
 
-		out = In.ar(inBus);
+		out = In.ar(inBus, 4);
 		out = FoaDecode.ar(out, binauralDecoder);
 
 		Out.ar(outBus, out);
 	});
 
+	positionSynth = CtkSynthDef.new(\positionSynth, {
+		arg inX, inY, inZ, cubeRoomSideLen, outBus;
+
+		var outX, outY, outZ;
+
+		#inX, inY, inZ = Lag2.kr([inX, inY, inZ], 0.05);
+
+		// transform from [0, 1] to [-1, 1]
+		#outX, outY, outZ = ([inX, inY, inZ] - 0.5) / 0.5;
+
+		// flip the x-axis
+		outX = outX * -1;
+
+		// Scale to room size
+		#outX, outY, outZ = [outX, outY, outZ] * cubeRoomSideLen;
+
+		// translate between Leap coordinate axes to
+		// traditional audio / ambisonic axes.
+		Out.kr(outBus, [outZ, outX, outY]);
+	});
+
 	// Dan's spatializer
-	spatializerSynth = CtkSynthDef('spatializerSynth', {
-		arg inbus, masterX, masterY, masterZ, outbus, width, gain = -12,
+	spatializerSynth = CtkSynthDef.new(\spatializerSynth, {
+		arg inbus, positionbus, outbus, width, gain = -12,
 		maxMeters = 1000, reverbGain = -18;
 
-		var cartesian, src, amplitude, freq, radialDistance, amp;
+		var pos, cartesian, src, amplitude, freq, radialDistance, amp;
 		var phi, theta,  chain, hiFreqAttenCoeff, minAttenDist, lpfDB, speedOfSound;
 		var reverb;
 
@@ -110,8 +171,11 @@ s.waitForBoot({
 		// B Format input
 		src = In.ar(inbus, 4);
 
+		// Position input
+		pos = In.kr(positionbus, 3);
+
 		// calculate theta, phi and rho
-		cartesian = Cartesian(masterX, masterY, masterZ);
+		cartesian = Cartesian(pos[0], pos[1], pos[2]);
 		theta = cartesian.theta;
 		phi = cartesian.phi;
 		radialDistance = cartesian.rho;
@@ -145,7 +209,7 @@ s.waitForBoot({
 
 		// tumble and then rotate
 		chain = FoaTumble.ar(chain, phi);
-		chain = FoaRotate.ar(chain, theta.poll(1));
+		chain = FoaRotate.ar(chain, theta);
 
 		// send out signal
 		Out.ar(outbus, chain + reverb)
@@ -153,14 +217,65 @@ s.waitForBoot({
 
 	// Routines ---------------------------------------
 	pulseBreathRoutine = Routine ({
-		var pulseNote;
+		var pulseNote, positionNote, breathNote, spatializerNote;
+
+		positionNote = positionSynth.note(target: positionGroup)
+		.inX_(0.5)
+		.inY_(0.5)
+		.inZ_(0.5)
+		.cubeRoomSideLen_(15)
+		.outBus_(positionBus)
+		.play;
+
+		breathNote = breathSynth.note(target: synthesisGroup)
+		.gain_(0)
+		.buffer_(voiceRecBuf)
+		.outBus_(voiceSpatializerBus)
+		.play;
+
 		pulseNote = pulseSynth.note(target: synthesisGroup)
-		.gain_(10)
+		.gain_(-6)
 		.rate_(1.0)
-		.pulseBuffer_(sounds["Pulse"])
+		.pulseBuffer_(sounds["Pulse2"])
 		.outBus_(decoderBus)
 		.play;
+
+		spatializerNote = spatializerSynth.note(target: spatializerGroup)
+		.inbus_(voiceSpatializerBus)
+		.positionbus_(positionBus)
+		.outbus_(decoderBus)
+		.width_(0)
+		.gain_(0)
+		.maxMeters_(1000)
+		.reverbGain_(-12)
+		.play;
+
+		OSCdef.new(oscDefKey, {
+			arg msg;
+			var handOffset = 10;
+			// 0 - message name
+			// 1 - has left hand? (0 or 1)
+			// 2 - x position left palm
+			// 3 - y position left palm
+			// 4 - z position left palm
+			// 5 - roll left palm (z-axis rotation)
+			// 6 - pitch left palm (x-axis rotation)
+			// 7 - yaw left palm (y-axis rotation)
+			// 8 - x velocity left palm
+			// 9 - grab strength left palm
+			// 10 - switch synth? (-1, 0, 1)
+			// 11 - 19, same but for the right hand
+
+			if((msg[handOffset + 1] > 0), {
+				positionNote.inX_(msg[handOffset + 2]);
+				positionNote.inY_(msg[handOffset + 3]);
+				positionNote.inZ_(msg[handOffset + 4]);
+			});
+
+		}, '/LeapMotion', recvPort: 5347);
 	});
+
+	s.sync;
 
 	scoreRoutine = Routine({
 		var decoderNote;
@@ -169,9 +284,12 @@ s.waitForBoot({
 		.inBus_(decoderBus)
 		.play;
 
+		// Section 1: Pulse + Breath
 		pulseBreathRoutine.play;
-		5.yield;
-		"Hello".postln;
+
+		// Section 2: Shepherd Swarm
+
+		// Section 3: Comb Breath / Percussive Breath
 	});
 
 	scoreRoutine.play;

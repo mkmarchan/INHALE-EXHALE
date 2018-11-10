@@ -23,7 +23,7 @@ s.waitForBoot({
 	soundInPort = 0;
 	recordingDur = 60 * 60;
 
-	// Kernels
+	// Kernels ----------------------------------------
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
 	omniEncoder = FoaEncoderMatrix.newOmni;
 	binauralDecoder = FoaDecoderKernel.newListen;

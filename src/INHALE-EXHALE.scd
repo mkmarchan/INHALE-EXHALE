@@ -1,6 +1,6 @@
 (
 s.options.numOutputBusChannels_(4);
-s.options.memSize_(8192 * 4);
+s.options.memSize_(8192 * 8);
 s.waitForBoot({
 	// Parameters
 	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey;
@@ -259,14 +259,14 @@ s.waitForBoot({
 		.play;
 
 		breathNote = breathSynth.note(target: synthesisGroup)
-		.gain_(0)
+		.gain_(-3)
 		.buffer_(voiceRecBuf)
 		.indexBus_(indexBus)
 		.outBus_(voiceSpatializerBus)
 		.play;
 
 		pulseNote = pulseSynth.note(target: synthesisGroup)
-		.gain_(-6)
+		.gain_(-3)
 		.rate_(1.0)
 		.pulseBuffer_(sounds["Pulse2"])
 		.outBus_(decoderBus)
@@ -315,7 +315,7 @@ s.waitForBoot({
 			gFreq = exprand(5, 15);
 
 			droneSynth.note(target: synthesisGroup)
-			.gain_(-18)
+			.gain_(-27)
 			.gFreq_(CtkControl.env(Env([gFreq, gFreq * 16], 60, 'exp')))
 			.rate_(CtkControl.env(Env([1.0, 16.0], 60, 'exp')))
 			.driftRate_(0.5)

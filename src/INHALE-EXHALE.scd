@@ -1,19 +1,20 @@
 (
 s.options.numOutputBusChannels_(4);
+s.options.memSize_(8192 * 4);
 s.waitForBoot({
 	// Parameters
-	var sndPath, oscDefKey, soundInPort, recordingDur;
+	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey;
 	// Kernels
 	var diffuseEncoder, omniEncoder, binauralDecoder;
 	// Buffers
 	var sounds, voiceRecBuf;
 	// Busses
-	var voiceSpatializerBus, positionBus, decoderBus;
+	var voiceSpatializerBus, voicePositionBus, decoderBus, indexBus;
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, decoderGroup;
 	// Synth defs
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
-	var breathSynth;
+	var breathSynth, droneSynth;
 	// Routines / sections
 	var scoreRoutine, pulseBreathRoutine;
 
@@ -22,6 +23,7 @@ s.waitForBoot({
 	oscDefKey = \oscDef;
 	soundInPort = 0;
 	recordingDur = 60 * 60;
+	jerkOSCKey = \jerkTriggerOSC;
 
 	// Kernels ----------------------------------------
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
@@ -42,7 +44,8 @@ s.waitForBoot({
 
 	// Busses -----------------------------------------
 	voiceSpatializerBus = CtkAudio.new(4);
-	positionBus = CtkControl.new(3);
+	indexBus = CtkControl.new(1);
+	voicePositionBus = CtkControl.new(3);
 	decoderBus = CtkAudio.new(4);
 
 	// Groups -----------------------------------------
@@ -74,7 +77,7 @@ s.waitForBoot({
 	});
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
-		arg gain, buffer, outBus;
+		arg gain, buffer, indexBus, outBus;
 
 		var maxReadDelay, readDelay, grainFreq, rate;
 		var signal, pos, impulse, gdur, ratePos, out;
@@ -104,6 +107,25 @@ s.waitForBoot({
 		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
 
 		Out.ar(outBus, out);
+		Out.kr(indexBus, pos);
+	});
+
+	droneSynth = CtkSynthDef.new(\droneSynth, {
+		arg gain, gFreq, rate, driftRate, index, buffer, outBus;
+
+		var out, gdur, impulse, drift;
+
+		gdur = 2 / gFreq;
+		impulse = Impulse.ar(gFreq);
+		drift = LFNoise2.ar(driftRate, pi / 2, [0, 0, 0]);
+
+		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, index);
+		out = FoaEncode.ar(out, diffuseEncoder);
+		out = FoaZoomX.ar(out, pi / 2);
+		out = FoaRTT.ar(out, drift[0], drift[1], drift[2]);
+		out = out * gain.dbamp;
+
+		Out.ar(outBus, out);
 	});
 
 
@@ -121,9 +143,15 @@ s.waitForBoot({
 	});
 
 	positionSynth = CtkSynthDef.new(\positionSynth, {
-		arg inX, inY, inZ, cubeRoomSideLen, outBus;
+		arg inX, inY, inZ, inXVel, cubeRoomSideLen, outBus;
 
-		var outX, outY, outZ;
+		var outX, outY, outZ, jerk, lastJerk;
+
+		jerk = inXVel.abs > 1500;
+
+		Poll.kr(jerk, inXVel, 'j');
+
+		SendTrig.kr(jerk);
 
 		#inX, inY, inZ = Lag2.kr([inX, inY, inZ], 0.05);
 
@@ -217,19 +245,23 @@ s.waitForBoot({
 
 	// Routines ---------------------------------------
 	pulseBreathRoutine = Routine ({
-		var pulseNote, positionNote, breathNote, spatializerNote;
+		var pulseNote, breathPositionNote, breathNote;
+		var breathSpatializerNote, dronePositionNote;
+		var droneSpatializerNote;
 
-		positionNote = positionSynth.note(target: positionGroup)
+		breathPositionNote = positionSynth.note(target: positionGroup)
 		.inX_(0.5)
 		.inY_(0.5)
 		.inZ_(0.5)
-		.cubeRoomSideLen_(15)
-		.outBus_(positionBus)
+		.inXVel_(0)
+		.cubeRoomSideLen_(4.57)
+		.outBus_(voicePositionBus)
 		.play;
 
 		breathNote = breathSynth.note(target: synthesisGroup)
 		.gain_(0)
 		.buffer_(voiceRecBuf)
+		.indexBus_(indexBus)
 		.outBus_(voiceSpatializerBus)
 		.play;
 
@@ -240,9 +272,9 @@ s.waitForBoot({
 		.outBus_(decoderBus)
 		.play;
 
-		spatializerNote = spatializerSynth.note(target: spatializerGroup)
+		breathSpatializerNote = spatializerSynth.note(target: spatializerGroup)
 		.inbus_(voiceSpatializerBus)
-		.positionbus_(positionBus)
+		.positionbus_(voicePositionBus)
 		.outbus_(decoderBus)
 		.width_(0)
 		.gain_(0)
@@ -261,18 +293,37 @@ s.waitForBoot({
 			// 5 - roll left palm (z-axis rotation)
 			// 6 - pitch left palm (x-axis rotation)
 			// 7 - yaw left palm (y-axis rotation)
-			// 8 - x velocity left palm
+			// 8 - x velocity of palm
 			// 9 - grab strength left palm
 			// 10 - switch synth? (-1, 0, 1)
 			// 11 - 19, same but for the right hand
 
 			if((msg[handOffset + 1] > 0), {
-				positionNote.inX_(msg[handOffset + 2]);
-				positionNote.inY_(msg[handOffset + 3]);
-				positionNote.inZ_(msg[handOffset + 4]);
+				breathPositionNote.inX_(msg[handOffset + 2]);
+				breathPositionNote.inY_(msg[handOffset + 3]);
+				breathPositionNote.inZ_(msg[handOffset + 4]);
+				breathPositionNote.inXVel_(msg[handOffset + 8]);
 			});
 
 		}, '/LeapMotion', recvPort: 5347);
+
+		OSCdef.new(jerkOSCKey, {
+			arg msg;
+
+			var gFreq;
+
+			gFreq = exprand(5, 15);
+
+			droneSynth.note(target: synthesisGroup)
+			.gain_(-18)
+			.gFreq_(CtkControl.env(Env([gFreq, gFreq * 16], 60, 'exp')))
+			.rate_(CtkControl.env(Env([1.0, 16.0], 60, 'exp')))
+			.driftRate_(0.5)
+			.index_(indexBus.getSynchronous(0))
+			.buffer_(voiceRecBuf)
+			.outBus_(decoderBus)
+			.play;
+		}, '/tr');
 	});
 
 	s.sync;

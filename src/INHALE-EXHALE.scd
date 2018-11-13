@@ -10,11 +10,13 @@ s.waitForBoot({
 	var sounds, voiceRecBuf;
 	// Busses
 	var voiceSpatializerBus, voicePositionBus, decoderBus, indexBus;
+	var sidechainBus;
 	// Groups
-	var positionGroup, synthesisGroup, spatializerGroup, decoderGroup;
+	var positionGroup, synthesisGroup, spatializerGroup, sidechainGroup;
+	var decoderGroup;
 	// Synth defs
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
-	var breathSynth, droneSynth;
+	var breathSynth, droneSynth, sidechainSynth;
 	// Routines / sections
 	var scoreRoutine, pulseBreathRoutine;
 
@@ -47,6 +49,7 @@ s.waitForBoot({
 	indexBus = CtkControl.new(1);
 	voicePositionBus = CtkControl.new(3);
 	decoderBus = CtkAudio.new(4);
+	sidechainBus = CtkAudio.new(4);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -55,7 +58,9 @@ s.waitForBoot({
 	s.sync;
 	spatializerGroup = CtkGroup.play(addAction: 'after', target: synthesisGroup, server: s);
 	s.sync;
-	decoderGroup = CtkGroup.play(addAction: 'after', target: spatializerGroup, server: s);
+	sidechainGroup = CtkGroup.play(addAction: 'after', target: spatializerGroup, server: s);
+	s.sync;
+	decoderGroup = CtkGroup.play(addAction: 'after', target: sidechainGroup, server: s);
 	s.sync;
 
 	// Synth Defs -------------------------------------
@@ -89,6 +94,7 @@ s.waitForBoot({
 
 		// Get the microphone input
 		signal = SoundIn.ar(soundInPort);
+		signal = PinkNoise.ar(0.1);
 
 		// record the microphone input
 		RecordBuf.ar(signal, buffer);
@@ -127,6 +133,30 @@ s.waitForBoot({
 
 		Out.ar(outBus, out);
 	});
+
+	sidechainSynth = CtkSynthDef.new(\sidechainSynth, {
+		arg inBus, depth, dur, rate, outBus;
+
+		var env, out, max, lag, scale, range;
+
+		max = 1;
+		lag = 0.05;
+		range = 1 - depth;
+		range = 1 - depth;
+		scale = max / range;
+
+		out = In.ar(inBus, 4);
+
+		env = min(
+			((Lag2.ar(LFSaw.ar(rate / dur, 1), lag) + 1) / 2).pow(2),
+			max
+		) / scale + depth;
+
+		out = out * env;
+
+		Out.ar(outBus, out);
+	});
+
 
 
 	decoderSynth = CtkSynthDef.new(\decoderSynth, {
@@ -247,7 +277,11 @@ s.waitForBoot({
 	pulseBreathRoutine = Routine ({
 		var pulseNote, breathPositionNote, breathNote;
 		var breathSpatializerNote, dronePositionNote;
-		var droneSpatializerNote;
+		var droneSpatializerNote, sidechainNote;
+		var pulse, pulseRate;
+
+		pulseRate = 1.0;
+		pulse = sounds["Pulse2"];
 
 		breathPositionNote = positionSynth.note(target: positionGroup)
 		.inX_(0.5)
@@ -267,19 +301,27 @@ s.waitForBoot({
 
 		pulseNote = pulseSynth.note(target: synthesisGroup)
 		.gain_(-3)
-		.rate_(1.0)
-		.pulseBuffer_(sounds["Pulse2"])
+		.rate_(pulseRate)
+		.pulseBuffer_(pulse)
 		.outBus_(decoderBus)
 		.play;
 
 		breathSpatializerNote = spatializerSynth.note(target: spatializerGroup)
 		.inbus_(voiceSpatializerBus)
 		.positionbus_(voicePositionBus)
-		.outbus_(decoderBus)
+		.outbus_(sidechainBus)
 		.width_(0)
 		.gain_(0)
 		.maxMeters_(1000)
 		.reverbGain_(-12)
+		.play;
+
+		sidechainNote = sidechainSynth.note(target: sidechainGroup)
+		.inBus_(sidechainBus)
+		.depth_(0.35)
+		.dur_(pulse.duration)
+		.rate_(pulseRate)
+		.outBus_(decoderBus)
 		.play;
 
 		OSCdef.new(oscDefKey, {
@@ -321,7 +363,7 @@ s.waitForBoot({
 			.driftRate_(0.5)
 			.index_(indexBus.getSynchronous(0))
 			.buffer_(voiceRecBuf)
-			.outBus_(decoderBus)
+			.outBus_(sidechainBus)
 			.play;
 		}, '/tr');
 	});

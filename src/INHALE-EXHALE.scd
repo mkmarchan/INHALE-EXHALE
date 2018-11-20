@@ -6,6 +6,7 @@ s.waitForBoot({
 	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey;
 	// Kernels
 	var diffuseEncoder, omniEncoder, binauralDecoder;
+	var spreadEncoder, stereoDecoder;
 	// Buffers
 	var sounds, voiceRecBuf;
 	// Busses
@@ -14,6 +15,8 @@ s.waitForBoot({
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, sidechainGroup;
 	var decoderGroup;
+	// Helper Functions
+	var calcFeedbackFromDecayTime;
 	// Synth defs
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
 	var breathSynth, droneSynth, sidechainSynth;
@@ -30,7 +33,9 @@ s.waitForBoot({
 	// Kernels ----------------------------------------
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
 	omniEncoder = FoaEncoderMatrix.newOmni;
+	spreadEncoder = FoaEncoderKernel.newSpread;
 	binauralDecoder = FoaDecoderKernel.newListen;
+	stereoDecoder = FoaDecoderMatrix.newStereo;
 	s.sync;
 
 	// Buffers ----------------------------------------
@@ -63,6 +68,15 @@ s.waitForBoot({
 	decoderGroup = CtkGroup.play(addAction: 'after', target: sidechainGroup, server: s);
 	s.sync;
 
+	// Helper Functions -------------------------------
+	calcFeedbackFromDecayTime = {
+		// expects positive non-zero values.
+		arg decayTime, delay, target = -60.dbamp;
+
+		target.pow(delay / decayTime);
+	};
+
+
 	// Synth Defs -------------------------------------
 	pulseSynth = CtkSynthDef.new(\pulseSynth, {
 		arg gain, rate, pulseBuffer, outBus;
@@ -82,22 +96,40 @@ s.waitForBoot({
 	});
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
-		arg gain, buffer, indexBus, outBus;
+		arg gain = 0.0, delay = 0.1, maxDelay = 2.0, t60 = 10, tOct = 5.0,
+		pitchUp = 1.0, buffer, indexBus, outBus;
 
 		var maxReadDelay, readDelay, grainFreq, rate;
 		var signal, pos, impulse, gdur, ratePos, out;
+		var localIn, localChannels;
+		var feedback, rateTarget;
 
+		// constant parameters
 		maxReadDelay = 2;
 		readDelay = ControlDur.ir;
 		grainFreq = 100;
 		rate = 1.0;
+		localChannels = 1;
+
+		// lag user input
+		gain = Lag2.kr(gain);
+		delay = Lag2.kr(delay);
+		t60 = Lag2.kr(t60);
+		tOct = Lag2.kr(tOct);
+
+		// input based parameters
+		feedback = calcFeedbackFromDecayTime.value(t60, delay, -60.dbamp);
+		rateTarget = (2.0 * pitchUp) + ((1 / 2.0) * (1 - pitchUp));
+		rate = calcFeedbackFromDecayTime.value(tOct, delay, rateTarget);
 
 		// Get the microphone input
 		signal = SoundIn.ar(soundInPort);
-		signal = PinkNoise.ar(0.1);
+		//signal = PinkNoise.ar(0.1) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], 'lin', 2, 0));
 
-		// record the microphone input
-		RecordBuf.ar(signal, buffer);
+		// record the microphone input and combine with the feedback
+		localIn = LocalIn.ar(localChannels);
+		localIn = DelayC.ar(localIn, maxDelay, delay);
+		RecordBuf.ar(signal + (feedback * localIn), buffer);
 		pos = DelayC.ar(Delay1.ar(Line.ar(0, 1, BufDur.ir(buffer))), maxReadDelay, readDelay);
 
 		// granular synthesis calculations
@@ -108,9 +140,14 @@ s.waitForBoot({
 		// granular synthesis
 		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, ratePos);
 
+		// feedback out (pre-encoding)
+		LocalOut.ar(out);
+
 		// Ambisonic encode
 		out = FoaEncode.ar(out, diffuseEncoder);
 		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
+
+		Poll.ar(Impulse.ar(1), tOct, 'f');
 
 		Out.ar(outBus, out);
 		Out.kr(indexBus, pos);
@@ -139,7 +176,7 @@ s.waitForBoot({
 
 		var env, out, max, lag, scale, range;
 
-		max = 1;
+		max = 0.5;
 		lag = 0.05;
 		range = 1 - depth;
 		range = 1 - depth;
@@ -278,10 +315,11 @@ s.waitForBoot({
 		var pulseNote, breathPositionNote, breathNote;
 		var breathSpatializerNote, dronePositionNote;
 		var droneSpatializerNote, sidechainNote;
-		var pulse, pulseRate;
+		var pulse, pulseRate, maxDelay;
 
 		pulseRate = 1.0;
 		pulse = sounds["Pulse2"];
+		maxDelay = 1.0;
 
 		breathPositionNote = positionSynth.note(target: positionGroup)
 		.inX_(0.5)
@@ -294,6 +332,11 @@ s.waitForBoot({
 
 		breathNote = breathSynth.note(target: synthesisGroup)
 		.gain_(-3)
+		.delay_(1 / 10)
+		.maxDelay_(maxDelay)
+		.t60_(10)
+		.tOct_(100)
+		.pitchUp_(1.0)
 		.buffer_(voiceRecBuf)
 		.indexBus_(indexBus)
 		.outBus_(voiceSpatializerBus)
@@ -341,10 +384,21 @@ s.waitForBoot({
 			// 11 - 19, same but for the right hand
 
 			if((msg[handOffset + 1] > 0), {
+				// positioning controls -- 1 to 1 spatial mapping
 				breathPositionNote.inX_(msg[handOffset + 2]);
 				breathPositionNote.inY_(msg[handOffset + 3]);
 				breathPositionNote.inZ_(msg[handOffset + 4]);
 				breathPositionNote.inXVel_(msg[handOffset + 8]);
+
+				// breath processing parameters
+				// Y -> low t60 to high
+				breathNote.t60_(msg[handOffset + 3].linexp(0, 0.5, 0.001, 5));
+				// Z -> low delay time to high
+				breathNote.delay_(msg[handOffset + 4].linexp(0, 1, 1 / 20, maxDelay));
+				// roll -> more rotation, faster tOct.
+				breathNote.tOct_(((msg[handOffset + 5].abs / pi - 0.5).abs / 0.5).linexp(0, 1, 100, 0.1));
+				// clockwise roll pitch up, ccw roll pitch down
+				breathNote.pitchUp_(msg[handOffset + 5].abs / pi > 0.5);
 			});
 
 		}, '/LeapMotion', recvPort: 5347);

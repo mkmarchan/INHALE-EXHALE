@@ -90,7 +90,7 @@ s.waitForBoot({
 
 		out = PlayBuf.ar(numBufChannels, pulseBuffer, rate, loop: 1);
 		out = out * gain.dbamp;
-		out = FoaEncode.ar(out, omniEncoder);
+		out = FoaEncode.ar(out, diffuseEncoder);
 
 		Out.ar(outBus, out);
 	});
@@ -124,7 +124,7 @@ s.waitForBoot({
 
 		// Get the microphone input
 		signal = SoundIn.ar(soundInPort);
-		//signal = PinkNoise.ar(0.1) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], 'lin', 2, 0));
+		//signal = PinkNoise.ar(0.5) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], -10, 2, 0));
 
 		// record the microphone input and combine with the feedback
 		localIn = LocalIn.ar(localChannels);
@@ -147,7 +147,7 @@ s.waitForBoot({
 		out = FoaEncode.ar(out, diffuseEncoder);
 		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
 
-		Poll.ar(Impulse.ar(1), tOct, 'f');
+		Poll.ar(Impulse.ar(1), rateTarget, 'f');
 
 		Out.ar(outBus, out);
 		Out.kr(indexBus, pos);
@@ -160,12 +160,10 @@ s.waitForBoot({
 
 		gdur = 2 / gFreq;
 		impulse = Impulse.ar(gFreq);
-		drift = LFNoise2.ar(driftRate, pi / 2, [0, 0, 0]);
+		drift = LFNoise2.ar(driftRate, pi / 2, [0, 0]);
 
 		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, index);
-		out = FoaEncode.ar(out, diffuseEncoder);
-		out = FoaZoomX.ar(out, pi / 2);
-		out = FoaRTT.ar(out, drift[0], drift[1], drift[2]);
+		out = FoaPanB.ar(out, drift[0], drift[1]);
 		out = out * gain.dbamp;
 
 		Out.ar(outBus, out);
@@ -210,7 +208,8 @@ s.waitForBoot({
 	});
 
 	positionSynth = CtkSynthDef.new(\positionSynth, {
-		arg inX, inY, inZ, inXVel, cubeRoomSideLen, outBus;
+		arg inX = 0.5, inY = 0.5, inZ = 0.5,
+		inXVel = 0, cubeRoomSideLen, outBus;
 
 		var outX, outY, outZ, jerk, lastJerk;
 
@@ -282,7 +281,7 @@ s.waitForBoot({
 		// radialDistance = VarLag.kr(radialDistance);
 
 		// the amplitude based on a starting amplitude, amp
-		amplitude = amp / radialDistance.clip(1, maxMeters);
+		amplitude = 1;//amp / radialDistance.clip(1, maxMeters);
 
 		// lowpass the src and apply envelope and amplitude
 		chain = LPF.ar(src, freq);
@@ -295,7 +294,7 @@ s.waitForBoot({
 
 		// zoom in on the center of the sound-field based on the arctangent of
 		// the distance and a user-defined width
-		chain = FoaZoom.ar(chain * amplitude, radialDistance.atan2(width));
+		chain = FoaZoom.ar(chain * amplitude, radialDistance.atan2(width), theta, phi);
 
 		// use proximity filters based on the distance
 		// note: proximity boots low frequencies so we need to condition our
@@ -303,8 +302,8 @@ s.waitForBoot({
 		chain = FoaProximity.ar(HPF.ar(HPF.ar(chain, 20.0), 20.0), radialDistance + 0.1);
 
 		// tumble and then rotate
-		chain = FoaTumble.ar(chain, phi);
-		chain = FoaRotate.ar(chain, theta);
+		//chain = FoaTumble.ar(chain, phi);
+		//chain = FoaRotate.ar(chain, theta);
 
 		// send out signal
 		Out.ar(outbus, chain + reverb)
@@ -353,7 +352,7 @@ s.waitForBoot({
 		.inbus_(voiceSpatializerBus)
 		.positionbus_(voicePositionBus)
 		.outbus_(sidechainBus)
-		.width_(0)
+		.width_(1)
 		.gain_(0)
 		.maxMeters_(1000)
 		.reverbGain_(-12)
@@ -361,7 +360,7 @@ s.waitForBoot({
 
 		sidechainNote = sidechainSynth.note(target: sidechainGroup)
 		.inBus_(sidechainBus)
-		.depth_(0.35)
+		.depth_(1)
 		.dur_(pulse.duration)
 		.rate_(pulseRate)
 		.outBus_(decoderBus)
@@ -392,11 +391,11 @@ s.waitForBoot({
 
 				// breath processing parameters
 				// Y -> low t60 to high
-				breathNote.t60_(msg[handOffset + 3].linexp(0, 0.5, 0.001, 5));
+				breathNote.t60_(msg[handOffset + 3].linexp(0, 0.3, 0.001, 20));
 				// Z -> low delay time to high
 				breathNote.delay_(msg[handOffset + 4].linexp(0, 1, 1 / 20, maxDelay));
 				// roll -> more rotation, faster tOct.
-				breathNote.tOct_(((msg[handOffset + 5].abs / pi - 0.5).abs / 0.5).linexp(0, 1, 100, 0.1));
+				breathNote.tOct_(((msg[handOffset + 5].abs / pi - 0.5).abs / 0.5).linexp(0, 1, 50, 0.5));
 				// clockwise roll pitch up, ccw roll pitch down
 				breathNote.pitchUp_(msg[handOffset + 5].abs / pi > 0.5);
 			});
@@ -438,6 +437,15 @@ s.waitForBoot({
 
 		// Section 3: Comb Breath / Percussive Breath
 	});
+
+
+	CmdPeriod.doOnce({
+		sounds.do({arg buffer;
+			buffer.free;
+		});
+		voiceRecBuf.free;
+	});
+
 
 	scoreRoutine.play;
 })

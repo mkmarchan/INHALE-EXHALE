@@ -3,7 +3,8 @@ s.options.numOutputBusChannels_(4);
 s.options.memSize_(8192 * 8);
 s.waitForBoot({
 	// Parameters
-	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey;
+	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey, positionOSCKey;
+	var sectionOneDur, sectionTwoDur, sectionThreeDur, pulse, pulseRate, startTime;
 	// Kernels
 	var diffuseEncoder, omniEncoder, binauralDecoder;
 	var spreadEncoder, stereoDecoder;
@@ -11,7 +12,7 @@ s.waitForBoot({
 	var sounds, voiceRecBuf;
 	// Busses
 	var voiceSpatializerBus, voicePositionBus, decoderBus, indexBus;
-	var sidechainBus;
+	var sidechainBus, sidechainPulseBus;
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, sidechainGroup;
 	var decoderGroup;
@@ -21,14 +22,19 @@ s.waitForBoot({
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
 	var breathSynth, droneSynth, sidechainSynth;
 	// Routines / sections
-	var scoreRoutine, pulseBreathRoutine;
+	var scoreRoutine, persistentRoutine, pulseBreathRoutine, shepherdSwarmRoutine;
+	// GUI
+	var window, userView;
 
 	// Parameters -------------------------------------
 	sndPath = "../res/".resolveRelative;
-	oscDefKey = \oscDef;
+	oscDefKey = \synthesisOSC;
+	jerkOSCKey = \jerkTriggerOSC;
+	positionOSCKey = \positionOSC;
 	soundInPort = 0;
 	recordingDur = 60 * 60;
-	jerkOSCKey = \jerkTriggerOSC;
+	pulse = "Pulse2";
+	pulseRate = 1.0;
 
 	// Kernels ----------------------------------------
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
@@ -55,6 +61,7 @@ s.waitForBoot({
 	voicePositionBus = CtkControl.new(3);
 	decoderBus = CtkAudio.new(4);
 	sidechainBus = CtkAudio.new(4);
+	sidechainPulseBus = CtkAudio.new(1);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -79,30 +86,34 @@ s.waitForBoot({
 
 	// Synth Defs -------------------------------------
 	pulseSynth = CtkSynthDef.new(\pulseSynth, {
-		arg gain, rate, pulseBuffer, outBus;
+		arg gain, dur = 1.0, rate, pulseBuffer, outBus, sidechainOutBus;
 
 		var numBufChannels;
-		var out;
-		var dur;
+		var out, env;
 
 		numBufChannels = 1;
-		dur = BufDur.ir(pulseBuffer);
 
 		out = PlayBuf.ar(numBufChannels, pulseBuffer, rate, loop: 1);
-		out = out * gain.dbamp;
 		out = FoaEncode.ar(out, diffuseEncoder);
 
-		Out.ar(outBus, out);
+		env = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
+
+		out = out * env;
+
+
+		Out.ar(outBus, out * gain.dbamp);
+		Out.ar(sidechainOutBus, out[0]);
 	});
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
-		arg gain = 0.0, delay = 0.1, maxDelay = 2.0, t60 = 10, tOct = 5.0,
+		arg gain = 0.0, dur = 1.0, delay = 0.1, maxDelay = 2.0, t60 = 10, tOct = 5.0,
 		pitchUp = 1.0, buffer, indexBus, outBus;
 
 		var maxReadDelay, readDelay, grainFreq, rate;
 		var signal, pos, impulse, gdur, ratePos, out;
 		var localIn, localChannels;
 		var feedback, rateTarget;
+		var env;
 
 		// constant parameters
 		maxReadDelay = 2;
@@ -125,6 +136,8 @@ s.waitForBoot({
 		// Get the microphone input
 		signal = SoundIn.ar(soundInPort);
 		//signal = PinkNoise.ar(0.5) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], -10, 2, 0));
+		//signal = BPF.ar(PinkNoise.ar(0.5), 880, 1);
+		//signal = SinOsc.ar(200, 0, 0.5);
 
 		// record the microphone input and combine with the feedback
 		localIn = LocalIn.ar(localChannels);
@@ -140,6 +153,10 @@ s.waitForBoot({
 		// granular synthesis
 		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, ratePos);
 
+		env = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
+
+		out = out * env;
+
 		// feedback out (pre-encoding)
 		LocalOut.ar(out);
 
@@ -147,16 +164,14 @@ s.waitForBoot({
 		out = FoaEncode.ar(out, diffuseEncoder);
 		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
 
-		Poll.ar(Impulse.ar(1), rateTarget, 'f');
-
 		Out.ar(outBus, out);
 		Out.kr(indexBus, pos);
 	});
 
 	droneSynth = CtkSynthDef.new(\droneSynth, {
-		arg gain, gFreq, rate, driftRate, index, buffer, outBus;
+		arg gain, dur = 1.0, gFreq, rate, driftRate, index, buffer, outBus;
 
-		var out, gdur, impulse, drift;
+		var out, gdur, impulse, drift, env;
 
 		gdur = 2 / gFreq;
 		impulse = Impulse.ar(gFreq);
@@ -166,13 +181,16 @@ s.waitForBoot({
 		out = FoaPanB.ar(out, drift[0], drift[1]);
 		out = out * gain.dbamp;
 
+		env = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
+		out = out * env;
+
 		Out.ar(outBus, out);
 	});
 
 	sidechainSynth = CtkSynthDef.new(\sidechainSynth, {
-		arg inBus, depth, dur, rate, outBus;
+		arg gain, inBus, pulseBus, sidechainGain, depth, dur, rate, outBus;
 
-		var env, out, max, lag, scale, range;
+		var env, out, pulse, max, lag, scale, range;
 
 		max = 0.5;
 		lag = 0.05;
@@ -181,13 +199,11 @@ s.waitForBoot({
 		scale = max / range;
 
 		out = In.ar(inBus, 4);
+		pulse = In.ar(pulseBus, 1);
 
-		env = min(
-			((Lag2.ar(LFSaw.ar(rate / dur, 1), lag) + 1) / 2).pow(2),
-			max
-		) / scale + depth;
-
-		out = out * env;
+		// sidechain dependent on pulse
+		out = out * (1 - min(1, Lag2.ar(pulse.abs) * sidechainGain.dbamp));
+		out = out * gain.dbamp;
 
 		Out.ar(outBus, out);
 	});
@@ -310,63 +326,48 @@ s.waitForBoot({
 	});
 
 	// Routines ---------------------------------------
-	pulseBreathRoutine = Routine ({
-		var pulseNote, breathPositionNote, breathNote;
-		var breathSpatializerNote, dronePositionNote;
-		var droneSpatializerNote, sidechainNote;
-		var pulse, pulseRate, maxDelay;
 
-		pulseRate = 1.0;
-		pulse = sounds["Pulse2"];
-		maxDelay = 1.0;
+	scoreRoutine = Routine({
+		// Begin routine that plays throughout piece
+		persistentRoutine.play;
+
+		// Section 1: Pulse + Breath
+		"Section 1 Starting".postln;
+		pulseBreathRoutine.play;
+
+		sectionOneDur.yield;
+		pulseBreathRoutine.stop;
+		// Section 2: Shepherd Swarm
+		"Section 2 Starting".postln;
+		shepherdSwarmRoutine.play;
+
+		sectionTwoDur.yield;
+		shepherdSwarmRoutine.stop;
+		// Section 3: Comb Breath / Percussive Breath
+		"Section 3 Starting".postln;
+
+		sectionThreeDur.yield;
+	});
+
+	persistentRoutine = Routine({
+		var decoderNote, breathPositionNote;
+
+		startTime = SystemClock.seconds;
+
+		decoderNote = decoderSynth.note(target: decoderGroup)
+		.inBus_(decoderBus)
+		.play;
 
 		breathPositionNote = positionSynth.note(target: positionGroup)
 		.inX_(0.5)
 		.inY_(0.5)
-		.inZ_(0.5)
+		.inZ_(0)
 		.inXVel_(0)
 		.cubeRoomSideLen_(4.57)
 		.outBus_(voicePositionBus)
 		.play;
 
-		breathNote = breathSynth.note(target: synthesisGroup)
-		.gain_(-3)
-		.delay_(1 / 10)
-		.maxDelay_(maxDelay)
-		.t60_(10)
-		.tOct_(100)
-		.pitchUp_(1.0)
-		.buffer_(voiceRecBuf)
-		.indexBus_(indexBus)
-		.outBus_(voiceSpatializerBus)
-		.play;
-
-		pulseNote = pulseSynth.note(target: synthesisGroup)
-		.gain_(-3)
-		.rate_(pulseRate)
-		.pulseBuffer_(pulse)
-		.outBus_(decoderBus)
-		.play;
-
-		breathSpatializerNote = spatializerSynth.note(target: spatializerGroup)
-		.inbus_(voiceSpatializerBus)
-		.positionbus_(voicePositionBus)
-		.outbus_(sidechainBus)
-		.width_(1)
-		.gain_(0)
-		.maxMeters_(1000)
-		.reverbGain_(-12)
-		.play;
-
-		sidechainNote = sidechainSynth.note(target: sidechainGroup)
-		.inBus_(sidechainBus)
-		.depth_(1)
-		.dur_(pulse.duration)
-		.rate_(pulseRate)
-		.outBus_(decoderBus)
-		.play;
-
-		OSCdef.new(oscDefKey, {
+		OSCdef.new(positionOSCKey, {
 			arg msg;
 			var handOffset = 10;
 			// 0 - message name
@@ -388,7 +389,90 @@ s.waitForBoot({
 				breathPositionNote.inY_(msg[handOffset + 3]);
 				breathPositionNote.inZ_(msg[handOffset + 4]);
 				breathPositionNote.inXVel_(msg[handOffset + 8]);
+			});
 
+		}, '/LeapMotion', recvPort: 5347);
+
+	});
+
+	pulseBreathRoutine = Routine({
+		var pulseNote, breathNote;
+		var breathSpatializerNote, dronePositionNote;
+		var droneSpatializerNote, sidechainNote;
+		var pulseBuffer, maxDelay;
+
+		pulseBuffer = sounds[pulse];
+		maxDelay = 1.0;
+
+		breathNote = breathSynth.note(target: synthesisGroup)
+		.gain_(-3)
+		.dur_(sectionOneDur + sectionTwoDur)
+		.delay_(1 / 10)
+		.maxDelay_(maxDelay)
+		.t60_(0)
+		.tOct_(100)
+		.pitchUp_(1.0)
+		.buffer_(voiceRecBuf)
+		.indexBus_(indexBus)
+		.outBus_(voiceSpatializerBus)
+		.play;
+
+		pulseNote = pulseSynth.note(target: synthesisGroup)
+		.gain_(-3)
+		.dur_(sectionOneDur + sectionTwoDur)
+		.rate_(CtkControl.env(
+				Env(
+					[1, 1, 2] * pulseRate,
+					[sectionOneDur, sectionTwoDur],
+					'exp')))
+		.pulseBuffer_(pulseBuffer)
+		.outBus_(decoderBus)
+		.sidechainOutBus_(sidechainPulseBus)
+		.play;
+
+		breathSpatializerNote = spatializerSynth.note(target: spatializerGroup)
+		.inbus_(voiceSpatializerBus)
+		.positionbus_(voicePositionBus)
+		.outbus_(sidechainBus)
+		.width_(1)
+		.gain_(0)
+		.maxMeters_(1000)
+		.reverbGain_(-12)
+		.play;
+
+		// TODO: Cleanup dead code in sidechain
+		sidechainNote = sidechainSynth.note(target: sidechainGroup)
+		.gain_(CtkControl.env(
+				Env(
+					[-27, -27, -60],
+					[sectionOneDur + sectionTwoDur, 0.05],
+					5)))
+		.inBus_(sidechainBus)
+		.pulseBus_(sidechainPulseBus)
+		.sidechainGain_(7)
+		.depth_(1)
+		.dur_(pulseBuffer.duration)
+		.rate_(pulseRate)
+		.outBus_(decoderBus)
+		.play;
+
+		OSCdef.new(oscDefKey, {
+			arg msg;
+			var handOffset = 10;
+			// 0 - message name
+			// 1 - has left hand? (0 or 1)
+			// 2 - x position left palm
+			// 3 - y position left palm
+			// 4 - z position left palm
+			// 5 - roll left palm (z-axis rotation)
+			// 6 - pitch left palm (x-axis rotation)
+			// 7 - yaw left palm (y-axis rotation)
+			// 8 - x velocity of palm
+			// 9 - grab strength left palm
+			// 10 - switch synth? (-1, 0, 1)
+			// 11 - 19, same but for the right hand
+
+			if((msg[handOffset + 1] > 0), {
 				// breath processing parameters
 				// Y -> low t60 to high
 				breathNote.t60_(msg[handOffset + 3].linexp(0, 0.3, 0.001, 20));
@@ -405,14 +489,31 @@ s.waitForBoot({
 		OSCdef.new(jerkOSCKey, {
 			arg msg;
 
-			var gFreq;
+			var gFreq, timeElapsed, timeTilSectionTwo, timeLeftInSectionTwo, endTime;
 
 			gFreq = exprand(5, 15);
+			timeElapsed = (SystemClock.seconds - startTime);
+			timeTilSectionTwo = max(0, sectionOneDur - timeElapsed);
+			endTime = sectionOneDur + sectionTwoDur;
+			timeLeftInSectionTwo = min(sectionTwoDur, endTime - timeElapsed);
 
 			droneSynth.note(target: synthesisGroup)
-			.gain_(-27)
-			.gFreq_(CtkControl.env(Env([gFreq, gFreq * 16], 60, 'exp')))
-			.rate_(CtkControl.env(Env([1.0, 16.0], 60, 'exp')))
+			.gain_(CtkControl.env(
+				Env(
+					[-20, -20, -60],
+					[timeTilSectionTwo, timeLeftInSectionTwo],
+					5)))
+			.dur_(endTime - timeElapsed)
+			.gFreq_(CtkControl.env(
+				Env(
+					[1, 1, 4] * gFreq,
+					[timeTilSectionTwo, timeLeftInSectionTwo],
+					'exp')))
+			.rate_(CtkControl.env(
+				Env(
+					[1.0, 1.0, 4],
+					[timeTilSectionTwo, timeLeftInSectionTwo],
+					'exp')))
 			.driftRate_(0.5)
 			.index_(indexBus.getSynchronous(0))
 			.buffer_(voiceRecBuf)
@@ -421,23 +522,64 @@ s.waitForBoot({
 		}, '/tr');
 	});
 
-	s.sync;
+	shepherdSwarmRoutine = Routine({
 
-	scoreRoutine = Routine({
-		var decoderNote;
+		var host, triggerName;
 
-		decoderNote = decoderSynth.note(target: decoderGroup)
-		.inBus_(decoderBus)
-		.play;
+		host = NetAddr.new("localhost", NetAddr.langPort);
+		triggerName = '/simTr';
 
-		// Section 1: Pulse + Breath
-		pulseBreathRoutine.play;
+		// should overwrite previous OSCDef
+		// todo: should have different amplitude envelope to make it shepherd like
+		//       gain increase, then decrease
+		// todo: kill make synths go to 0 amp through sidechain synth. timing hard.
+		// todo: speed up rate is too fast
+		// todo: volume sounds weird, maybe modulate the sidechain volume so that it
+		//       increases during the shepherd section and then rapidly drops.
+		OSCdef.new(jerkOSCKey, {
+			arg msg;
 
-		// Section 2: Shepherd Swarm
+			var droneDur, gFreq, timeElapsed, timeTilSectionTwo, timeLeftInSectionTwo, endTime;
 
-		// Section 3: Comb Breath / Percussive Breath
+			droneDur = sectionTwoDur / 2;
+			gFreq = exprand(5, 15);
+			timeElapsed = (SystemClock.seconds - startTime);
+			timeTilSectionTwo = max(0, sectionOneDur - timeElapsed);
+			endTime = sectionOneDur + sectionTwoDur;
+			timeLeftInSectionTwo = min(sectionTwoDur, endTime - timeElapsed);
+
+			droneSynth.note(target: synthesisGroup)
+			.gain_(CtkControl.env(
+				Env(
+					[-60, -20, -60],
+					[1, 1] * droneDur / 2,
+					[-5, 5])))
+			.dur_(endTime - timeElapsed)
+			.gFreq_(CtkControl.env(
+				Env(
+					[1, 2.0] * gFreq,
+					droneDur,
+					'exp')))
+			.rate_(CtkControl.env(
+				Env(
+					[1.0, 2.0],
+					droneDur,
+					'exp')))
+			.driftRate_(0.5)
+			.index_(indexBus.getSynchronous(0))
+			.buffer_(voiceRecBuf)
+			.outBus_(sidechainBus)
+			.play;
+		}, triggerName);
+
+		loop({
+			var timeToWait = rand(5.0);
+			timeToWait.yield;
+			host.sendMsg(triggerName, "");
+		});
 	});
 
+	s.sync;
 
 	CmdPeriod.doOnce({
 		sounds.do({arg buffer;
@@ -446,7 +588,43 @@ s.waitForBoot({
 		voiceRecBuf.free;
 	});
 
+	// Routine Durations & Play ----------------------
+	sectionOneDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionTwoDur = sectionOneDur;
+	sectionThreeDur = 60;
+
 
 	scoreRoutine.play;
+
+	// Draw progress bar GUI -------------------------
+
+	window = Window.new("Progress", Rect(0, 0, Window.screenBounds.width, 50));
+	userView = UserView.new(window, Rect(0, 0, window.bounds.width, window.bounds.height));
+	userView.resize = 5;
+	userView.drawFunc_({
+		var totalTime, progress, sectionTwoNotch, sectionThreeNotch;
+
+		totalTime = sectionOneDur + sectionTwoDur + sectionThreeDur;
+		progress = (SystemClock.seconds - startTime) / totalTime;
+		sectionTwoNotch = sectionOneDur / totalTime;
+		sectionThreeNotch = sectionTwoDur / totalTime + sectionTwoNotch;
+
+		Pen.fillColor_(Color.black);
+		Pen.fillRect(Rect(0, 0, window.bounds.width, window.bounds.height));
+		Pen.fillColor_(Color.green);
+		Pen.fillRect(Rect(0, 0, window.bounds.width * progress, window.bounds.height));
+		Pen.fillColor_(Color.red);
+		Pen.fillRect(Rect(window.bounds.width * sectionTwoNotch, 0, 5, window.bounds.height));
+		Pen.fillRect(Rect(window.bounds.width * sectionThreeNotch, 0, 5, window.bounds.height));
+
+	});
+	userView.animate = true;
+	userView.frameRate = 5;
+	window.front;
 })
+)
+
+(
+n = NetAddr.new("localhost", NetAddr.langPort);
+n.sendMsg('/tr', "");
 )

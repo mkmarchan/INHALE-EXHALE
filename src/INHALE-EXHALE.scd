@@ -64,7 +64,7 @@ s.waitForBoot({
 	sidechainBus = CtkAudio.new(4);
 	sidechainPulseBus = CtkAudio.new(1);
 	recBus = CtkAudio.new(1);
-	recPosBus = CtkAudio.new(1);
+	recPosBus = CtkControl.new(1);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -89,23 +89,35 @@ s.waitForBoot({
 
 	// Synth Defs -------------------------------------
 	pulseSynth = CtkSynthDef.new(\pulseSynth, {
-		arg gain, dur = 1.0, rate, pulseBuffer, outBus, sidechainOutBus;
+		arg gain, dur = 1.0, rate, amp = 0.0, pulseBuffer, outBus, sidechainOutBus;
 
 		var numBufChannels;
-		var out, env;
+		var out, env, loopTrigger, grainTrigger, grainDur, grainFreq, pos, pulseFreq, dist;
 
 		numBufChannels = 1;
+		grainFreq = 40.22;
+		grainDur = 2 / grainFreq;
+		pulseFreq = rate / BufDur.ir(pulseBuffer);
+		loopTrigger = Impulse.ar(pulseFreq);
+		grainTrigger = Impulse.ar(grainFreq);
+		pos = (Sweep.ar(loopTrigger, pulseFreq) * BufDur.ir(pulseBuffer)).trunc(1 / grainFreq) / BufDur.ir(pulseBuffer);
 
 		out = PlayBuf.ar(numBufChannels, pulseBuffer, rate, loop: 1);
+		//out = GrainBuf.ar(numBufChannels, grainTrigger, grainDur, pulseBuffer, 1,  pos);
+
+		Out.ar(sidechainOutBus, out);
+
+		dist = 0.2 * LPF.ar(HPF.ar(CrossoverDistortion.ar(out, amp, 0.5), 100), 100 + (amp.exp - 1 / 1.exp * 20000));
+		out = out + dist;
+
 		out = FoaEncode.ar(out, diffuseEncoder);
 
 		env = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
 
+
 		out = out * env;
 
-
 		Out.ar(outBus, out * gain.dbamp);
-		Out.ar(sidechainOutBus, out[0]);
 	});
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
@@ -172,7 +184,7 @@ s.waitForBoot({
 
 	breathPercSynth = CtkSynthDef.new(\breathPercSynth, {
 		arg gain;
-		Out.ar(0, SinOsc.ar);
+		//Out.ar(0, 0.1 * SinOsc.ar);
 	});
 
 	droneSynth = CtkSynthDef.new(\droneSynth, {
@@ -249,7 +261,7 @@ s.waitForBoot({
 
 		pos = DelayN.ar(Line.ar(0, 1, bufDur), delay, delay);
 
-		Out.ar(recPosOut, pos);
+		Out.kr(recPosOut, pos);
 	});
 
 	positionSynth = CtkSynthDef.new(\positionSynth, {
@@ -468,6 +480,11 @@ s.waitForBoot({
 					[1, 1, 2] * pulseRate,
 					[sectionOneDur, sectionTwoDur],
 					'exp')))
+		.amp_(CtkControl.env(
+				Env(
+					[0, 0, 1.0] * pulseRate,
+					[sectionOneDur, sectionTwoDur],
+					-0.2)))
 		.pulseBuffer_(pulseBuffer)
 		.outBus_(decoderBus)
 		.sidechainOutBus_(sidechainPulseBus)
@@ -616,7 +633,7 @@ s.waitForBoot({
 		}, triggerName);
 
 		loop({
-			var timeToWait = rand(5.0);
+			var timeToWait = rand(2.0);
 			timeToWait.yield;
 			host.sendMsg(triggerName, "");
 		});
@@ -632,8 +649,8 @@ s.waitForBoot({
 	s.sync;
 
 	// Routine Durations & Play ----------------------
-	sectionOneDur = 60 * (60 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionTwoDur = sectionOneDur;
+	sectionOneDur = (1 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionTwoDur = 60;
 	sectionThreeDur = 60;
 
 

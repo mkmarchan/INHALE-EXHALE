@@ -11,8 +11,8 @@ s.waitForBoot({
 	// Buffers
 	var sounds, voiceRecBuf;
 	// Busses
-	var voiceSpatializerBus, voicePositionBus, decoderBus, indexBus;
-	var sidechainBus, sidechainPulseBus;
+	var voiceSpatializerBus, voicePositionBus, decoderBus;
+	var sidechainBus, sidechainPulseBus, recPosBus, recBus;
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, sidechainGroup;
 	var decoderGroup;
@@ -20,9 +20,11 @@ s.waitForBoot({
 	var calcFeedbackFromDecayTime;
 	// Synth defs
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
-	var breathSynth, droneSynth, sidechainSynth;
+	var breathSynth, droneSynth, sidechainSynth, breathPercSynth;
+	var recSynth, recPosSynth;
 	// Routines / sections
 	var scoreRoutine, persistentRoutine, pulseBreathRoutine, shepherdSwarmRoutine;
+	var breathPercRoutine;
 	// GUI
 	var window, userView;
 
@@ -57,11 +59,12 @@ s.waitForBoot({
 
 	// Busses -----------------------------------------
 	voiceSpatializerBus = CtkAudio.new(4);
-	indexBus = CtkControl.new(1);
 	voicePositionBus = CtkControl.new(3);
 	decoderBus = CtkAudio.new(4);
 	sidechainBus = CtkAudio.new(4);
 	sidechainPulseBus = CtkAudio.new(1);
+	recBus = CtkAudio.new(1);
+	recPosBus = CtkAudio.new(1);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -107,13 +110,13 @@ s.waitForBoot({
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
 		arg gain = 0.0, dur = 1.0, delay = 0.1, maxDelay = 2.0, t60 = 10, tOct = 5.0,
-		pitchUp = 1.0, buffer, indexBus, outBus;
+		pitchUp = 1.0, buffer, outBus, recBus, pos;
 
 		var maxReadDelay, readDelay, grainFreq, rate;
-		var signal, pos, impulse, gdur, ratePos, out;
+		var signal, impulse, gdur, ratePos, out;
 		var localIn, localChannels;
 		var feedback, rateTarget;
-		var env;
+		var env, recOut;
 
 		// constant parameters
 		maxReadDelay = 2;
@@ -142,8 +145,8 @@ s.waitForBoot({
 		// record the microphone input and combine with the feedback
 		localIn = LocalIn.ar(localChannels);
 		localIn = DelayC.ar(localIn, maxDelay, delay);
-		RecordBuf.ar(signal + (feedback * localIn), buffer);
-		pos = DelayC.ar(Delay1.ar(Line.ar(0, 1, BufDur.ir(buffer))), maxReadDelay, readDelay);
+
+		recOut = signal + (feedback * localIn);
 
 		// granular synthesis calculations
 		impulse = Impulse.ar(grainFreq);
@@ -162,10 +165,14 @@ s.waitForBoot({
 
 		// Ambisonic encode
 		out = FoaEncode.ar(out, diffuseEncoder);
-		//out = FoaZoom.ar(out, pi/2, SinOsc.ar(1) * pi / 2);
 
 		Out.ar(outBus, out);
-		Out.kr(indexBus, pos);
+		Out.ar(recBus, recOut);
+	});
+
+	breathPercSynth = CtkSynthDef.new(\breathPercSynth, {
+		arg gain;
+		Out.ar(0, SinOsc.ar);
 	});
 
 	droneSynth = CtkSynthDef.new(\droneSynth, {
@@ -221,6 +228,28 @@ s.waitForBoot({
 		out = FoaDecode.ar(out, binauralDecoder);
 
 		Out.ar(outBus, out);
+	});
+
+	recSynth = CtkSynthDef.new(\recSynth, {
+		arg buffer, inBus;
+
+		var in, numChannels;
+
+		numChannels = 1;
+
+		in = In.ar(inBus, numChannels);
+
+		RecordBuf.ar(in, buffer);
+	});
+
+	recPosSynth = CtkSynthDef.new(\recPosSynth, {
+		arg delay, bufDur, recPosOut;
+
+		var pos;
+
+		pos = DelayN.ar(Line.ar(0, 1, bufDur), delay, delay);
+
+		Out.ar(recPosOut, pos);
 	});
 
 	positionSynth = CtkSynthDef.new(\positionSynth, {
@@ -345,12 +374,14 @@ s.waitForBoot({
 		shepherdSwarmRoutine.stop;
 		// Section 3: Comb Breath / Percussive Breath
 		"Section 3 Starting".postln;
+		breathPercRoutine.play;
 
 		sectionThreeDur.yield;
+		breathPercRoutine.stop;
 	});
 
 	persistentRoutine = Routine({
-		var decoderNote, breathPositionNote;
+		var decoderNote, breathPositionNote, recNote, recPosNote;
 
 		startTime = SystemClock.seconds;
 
@@ -361,10 +392,21 @@ s.waitForBoot({
 		breathPositionNote = positionSynth.note(target: positionGroup)
 		.inX_(0.5)
 		.inY_(0.5)
-		.inZ_(0)
+		.inZ_(0.5)
 		.inXVel_(0)
 		.cubeRoomSideLen_(4.57)
 		.outBus_(voicePositionBus)
+		.play;
+
+		recNote = recSynth.note(target: decoderGroup)
+		.inBus_(recBus)
+		.buffer_(voiceRecBuf)
+		.play;
+
+		recPosNote = recPosSynth.note(target: positionGroup)
+		.delay_(0.01)
+		.bufDur_(recordingDur)
+		.recPosOut_(recPosBus)
 		.play;
 
 		OSCdef.new(positionOSCKey, {
@@ -413,8 +455,9 @@ s.waitForBoot({
 		.tOct_(100)
 		.pitchUp_(1.0)
 		.buffer_(voiceRecBuf)
-		.indexBus_(indexBus)
 		.outBus_(voiceSpatializerBus)
+		.recBus_(recBus)
+		.pos_(recPosBus)
 		.play;
 
 		pulseNote = pulseSynth.note(target: synthesisGroup)
@@ -515,7 +558,7 @@ s.waitForBoot({
 					[timeTilSectionTwo, timeLeftInSectionTwo],
 					'exp')))
 			.driftRate_(0.5)
-			.index_(indexBus.getSynchronous(0))
+			.index_(recPosBus.getSynchronous(0))
 			.buffer_(voiceRecBuf)
 			.outBus_(sidechainBus)
 			.play;
@@ -566,7 +609,7 @@ s.waitForBoot({
 					droneDur,
 					'exp')))
 			.driftRate_(0.5)
-			.index_(indexBus.getSynchronous(0))
+			.index_(recPosBus.getSynchronous(0))
 			.buffer_(voiceRecBuf)
 			.outBus_(sidechainBus)
 			.play;
@@ -579,17 +622,17 @@ s.waitForBoot({
 		});
 	});
 
-	s.sync;
+	breathPercRoutine = Routine({
+		var breathPercNote;
 
-	CmdPeriod.doOnce({
-		sounds.do({arg buffer;
-			buffer.free;
-		});
-		voiceRecBuf.free;
+		breathPercNote = breathPercSynth.note.play;
+
 	});
 
+	s.sync;
+
 	// Routine Durations & Play ----------------------
-	sectionOneDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionOneDur = 60 * (60 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionTwoDur = sectionOneDur;
 	sectionThreeDur = 60;
 
@@ -621,6 +664,14 @@ s.waitForBoot({
 	userView.animate = true;
 	userView.frameRate = 5;
 	window.front;
+
+	CmdPeriod.doOnce({
+		sounds.do({arg buffer;
+			buffer.free;
+		});
+		voiceRecBuf.free;
+		window.close;
+	});
 })
 )
 

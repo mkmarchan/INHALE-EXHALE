@@ -64,7 +64,7 @@ s.waitForBoot({
 	sidechainBus = CtkAudio.new(4);
 	sidechainPulseBus = CtkAudio.new(1);
 	recBus = CtkAudio.new(1);
-	recPosBus = CtkControl.new(1);
+	recPosBus = CtkAudio.new(1);
 
 	// Groups -----------------------------------------
 	positionGroup = CtkGroup.play(server: s);
@@ -94,6 +94,7 @@ s.waitForBoot({
 		var numBufChannels;
 		var out, env, loopTrigger, grainTrigger, grainDur, grainFreq, pos, pulseFreq, dist;
 
+		gain = Lag2.kr(gain, 0.01);
 		numBufChannels = 1;
 		grainFreq = 40.22;
 		grainDur = 2 / grainFreq;
@@ -161,6 +162,7 @@ s.waitForBoot({
 		recOut = signal + (feedback * localIn);
 
 		// granular synthesis calculations
+		pos = In.ar(pos);
 		impulse = Impulse.ar(grainFreq);
 		gdur = 2 / grainFreq;
 		ratePos = ratePos = (pos - (max(0, rate - 1) * gdur * SampleRate.ir / BufSamples.ir(buffer))) % 1;
@@ -178,13 +180,44 @@ s.waitForBoot({
 		// Ambisonic encode
 		out = FoaEncode.ar(out, diffuseEncoder);
 
-		Out.ar(outBus, out);
+		Out.ar(outBus, out * gain.dbamp);
 		Out.ar(recBus, recOut);
 	});
 
 	breathPercSynth = CtkSynthDef.new(\breathPercSynth, {
-		arg gain;
-		//Out.ar(0, 0.1 * SinOsc.ar);
+		arg gain, dur, envRate, grainFreq, buffer, outBus, recBus, pos;
+
+		var globalEnv, env, signal, out, impulse, gdur, ratePos, rates, voices;
+		var numVoices, rotationChange;
+
+		numVoices = 5;
+
+		signal = SoundIn.ar(0);//PinkNoise.ar(0.5);//
+
+		env = LFSaw.ar(-1 * envRate, 1, 0.5, 0.5).pow(1.1);
+		env = Lag2.ar(env, 0.001);
+
+		// granular synthesis calculations
+		pos = In.ar(pos);
+		rates = 1.1.pow(Array.series(numVoices, -4, 1));
+		impulse = Impulse.ar(grainFreq);
+		gdur = 2 / grainFreq;
+		ratePos = (pos - (max(0, rates - 1) * gdur * SampleRate.ir / BufSamples.ir(buffer))) % 1;
+
+		// granular synthesis
+		voices = GrainBuf.ar(1, impulse, gdur, buffer, rates, ratePos);
+
+		// ambisonics
+		rotationChange = 2 * pi / numVoices;
+		out = 0;
+		voices.do({ arg element, index;
+			(rotationChange * index - pi).postln;
+			out = out + FoaPanB.ar(element, rotationChange * index - pi);
+		});
+		out = out * env;
+
+		Out.ar(recBus, signal);
+		Out.ar(outBus, out);
 	});
 
 	droneSynth = CtkSynthDef.new(\droneSynth, {
@@ -192,7 +225,7 @@ s.waitForBoot({
 
 		var out, gdur, impulse, drift, env;
 
-		gdur = 2 / gFreq;
+		gdur = 1 / gFreq;
 		impulse = Impulse.ar(gFreq);
 		drift = LFNoise2.ar(driftRate, pi / 2, [0, 0]);
 
@@ -261,7 +294,7 @@ s.waitForBoot({
 
 		pos = DelayN.ar(Line.ar(0, 1, bufDur), delay, delay);
 
-		Out.kr(recPosOut, pos);
+		Out.ar(recPosOut, pos);
 	});
 
 	positionSynth = CtkSynthDef.new(\positionSynth, {
@@ -482,7 +515,7 @@ s.waitForBoot({
 					'exp')))
 		.amp_(CtkControl.env(
 				Env(
-					[0, 0, 1.0] * pulseRate,
+					[0, 0, 1.0],
 					[sectionOneDur, sectionTwoDur],
 					-0.2)))
 		.pulseBuffer_(pulseBuffer)
@@ -504,12 +537,12 @@ s.waitForBoot({
 		sidechainNote = sidechainSynth.note(target: sidechainGroup)
 		.gain_(CtkControl.env(
 				Env(
-					[-27, -27, -60],
+					[-10, 10, -60],
 					[sectionOneDur + sectionTwoDur, 0.05],
 					5)))
 		.inBus_(sidechainBus)
 		.pulseBus_(sidechainPulseBus)
-		.sidechainGain_(7)
+		.sidechainGain_(3)
 		.depth_(1)
 		.dur_(pulseBuffer.duration)
 		.rate_(pulseRate)
@@ -550,19 +583,21 @@ s.waitForBoot({
 			arg msg;
 
 			var gFreq, timeElapsed, timeTilSectionTwo, timeLeftInSectionTwo, endTime;
+			var bufIndex;
 
 			gFreq = exprand(5, 15);
 			timeElapsed = (SystemClock.seconds - startTime);
 			timeTilSectionTwo = max(0, sectionOneDur - timeElapsed);
 			endTime = sectionOneDur + sectionTwoDur;
 			timeLeftInSectionTwo = min(sectionTwoDur, endTime - timeElapsed);
+			bufIndex = timeElapsed / recordingDur;
 
 			droneSynth.note(target: synthesisGroup)
 			.gain_(CtkControl.env(
 				Env(
-					[-20, -20, -60],
+					[-10, -10, 0],
 					[timeTilSectionTwo, timeLeftInSectionTwo],
-					5)))
+					-5)))
 			.dur_(endTime - timeElapsed)
 			.gFreq_(CtkControl.env(
 				Env(
@@ -575,7 +610,7 @@ s.waitForBoot({
 					[timeTilSectionTwo, timeLeftInSectionTwo],
 					'exp')))
 			.driftRate_(0.5)
-			.index_(recPosBus.getSynchronous(0))
+			.index_(bufIndex)
 			.buffer_(voiceRecBuf)
 			.outBus_(sidechainBus)
 			.play;
@@ -584,10 +619,11 @@ s.waitForBoot({
 
 	shepherdSwarmRoutine = Routine({
 
-		var host, triggerName;
+		var host, triggerName, numDronesToFire;
 
 		host = NetAddr.new("localhost", NetAddr.langPort);
 		triggerName = '/simTr';
+		numDronesToFire = 50;
 
 		// should overwrite previous OSCDef
 		// todo: should have different amplitude envelope to make it shepherd like
@@ -599,58 +635,109 @@ s.waitForBoot({
 		OSCdef.new(jerkOSCKey, {
 			arg msg;
 
-			var droneDur, gFreq, timeElapsed, timeTilSectionTwo, timeLeftInSectionTwo, endTime;
+			var gFreq, timeElapsed, timeTilSectionTwo, timeLeftInSectionTwo, endTime;
+			var startAmp, endAmp, bufIndex;
 
-			droneDur = sectionTwoDur / 2;
-			gFreq = exprand(5, 15);
+			gFreq = exprand(1, 5);
 			timeElapsed = (SystemClock.seconds - startTime);
 			timeTilSectionTwo = max(0, sectionOneDur - timeElapsed);
 			endTime = sectionOneDur + sectionTwoDur;
 			timeLeftInSectionTwo = min(sectionTwoDur, endTime - timeElapsed);
+			startAmp = timeLeftInSectionTwo / sectionTwoDur * 20 + -45;
+			endAmp = startAmp + 10;
+			bufIndex = timeElapsed / recordingDur;
 
 			droneSynth.note(target: synthesisGroup)
 			.gain_(CtkControl.env(
 				Env(
-					[-60, -20, -60],
-					[1, 1] * droneDur / 2,
-					[-5, 5])))
+					[startAmp, endAmp],
+					timeLeftInSectionTwo,
+					-5)))
 			.dur_(endTime - timeElapsed)
 			.gFreq_(CtkControl.env(
 				Env(
-					[1, 2.0] * gFreq,
-					droneDur,
+					[1, 8.0] * gFreq,
+					timeLeftInSectionTwo,
 					'exp')))
 			.rate_(CtkControl.env(
 				Env(
-					[1.0, 2.0],
-					droneDur,
+					[1.0, 8.0],
+					timeLeftInSectionTwo,
 					'exp')))
 			.driftRate_(0.5)
-			.index_(recPosBus.getSynchronous(0))
+			.index_(bufIndex)
 			.buffer_(voiceRecBuf)
 			.outBus_(sidechainBus)
 			.play;
 		}, triggerName);
 
 		loop({
-			var timeToWait = rand(2.0);
+			var timeToWait = sectionTwoDur / numDronesToFire + rand(1.0);
 			timeToWait.yield;
 			host.sendMsg(triggerName, "");
 		});
 	});
 
 	breathPercRoutine = Routine({
-		var breathPercNote;
+		var breathPercNote, pulseNote, pulseBuffer;
 
-		breathPercNote = breathPercSynth.note.play;
+		pulseBuffer = sounds[pulse];
+
+		breathPercNote = breathPercSynth.note(target: synthesisGroup)
+		.gain_(0)
+		.dur_(sectionThreeDur)
+		.envRate_(4.0)
+		.grainFreq_(80)
+		.buffer_(voiceRecBuf)
+		.outBus_(decoderBus)
+		.recBus_(recBus)
+		.pos_(recPosBus)
+		.play;
+
+		pulseNote = pulseSynth.note(target: synthesisGroup)
+		.gain_(-60)
+		.dur_(sectionThreeDur)
+		.rate_(3)
+		.amp_(1)
+		.pulseBuffer_(pulseBuffer)
+		.outBus_(decoderBus)
+		.sidechainOutBus_(sidechainPulseBus)
+		.play;
+
+		OSCdef.new(oscDefKey, {
+			arg msg;
+			var handOffset = 10;
+			// 0 - message name
+			// 1 - has left hand? (0 or 1)
+			// 2 - x position left palm
+			// 3 - y position left palm
+			// 4 - z position left palm
+			// 5 - roll left palm (z-axis rotation)
+			// 6 - pitch left palm (x-axis rotation)
+			// 7 - yaw left palm (y-axis rotation)
+			// 8 - x velocity of palm
+			// 9 - grab strength left palm
+			// 10 - switch synth? (-1, 0, 1)
+			// 11 - 19, same but for the right hand
+
+			if((msg[handOffset + 1] > 0), {
+				(msg[handOffset + 9] > 0.5).postln;
+				// breath perc parameters
+				// roll -> more rotation, faster env rate
+				breathPercNote.envRate_((msg[handOffset + 5].abs / pi).linexp(0, 1, 4.0, 20.0));
+				pulseNote.gain_((msg[handOffset + 9] > 0.5).asInt - 1 * 60);
+			});
+
+		}, '/LeapMotion', recvPort: 5347);
+
 
 	});
 
 	s.sync;
 
 	// Routine Durations & Play ----------------------
-	sectionOneDur = (1 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionTwoDur = 60;
+	sectionOneDur = (0 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionTwoDur = (0 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionThreeDur = 60;
 
 

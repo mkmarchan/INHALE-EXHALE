@@ -189,7 +189,7 @@ s.waitForBoot({
 	});
 
 	breathPercSynth = CtkSynthDef.new(\breathPercSynth, {
-		arg gain, dur, envRate, envDepth, grainFreq, zoom, buffer, outBus, recBus, pos, handPosBus;
+		arg gain, dur, envRate, envDepth, grainFreq, zoom, feedbackDecay, buffer, outBus, recBus, pos, handPosBus;
 
 		var globalEnv, env, signal, out, impulse, gdur, ratePos, rates, voices;
 		var numVoices, rotationChange, soundPos;
@@ -223,6 +223,7 @@ s.waitForBoot({
 		out = FoaReverb.ar(out, 0.2, t60low: 1.5, t60high: 1);
 
 		// zoom
+		// todo: remove
 		out = FoaFocusX.ar(out, zoom);
 
 		// envelope
@@ -231,6 +232,10 @@ s.waitForBoot({
 		globalEnv = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
 		out = out * ((envDepth * env) + (1 - envDepth)) * globalEnv;
 
+		// feedback
+		out = out + CombC.ar(out, 0.2, 0.1, feedbackDecay, 0.3);
+
+		Poll.ar(impulse, feedbackDecay, 'f');
 
 		Out.ar(recBus, signal);
 		Out.ar(outBus, out);
@@ -265,8 +270,10 @@ s.waitForBoot({
 		gdur = q / gFreq;
 		impulse = Impulse.ar(gFreq);
 		index = Array.rand(20, 0, 0.5);
+		index = index % pos;
 
-		out = GrainBuf.ar(1, impulse, gdur, buffer, rate, index);
+		out = GrainBuf.ar(1, impulse, gdur, buffer, [0.5, 1, 2], index);
+		out = out.sum / (index.size * 3);
 
 		// ambisonics
 		drift = LFNoise2.ar(1, pi / 2, [0, 0]);
@@ -310,7 +317,7 @@ s.waitForBoot({
 		outBus = 0;
 
 		out = In.ar(inBus, 4);
-		//out = FoaRotate.ar(out, pi);
+		out = FoaRotate.ar(out, pi);
 		//out = FoaDecode.ar(out, binauralDecoder);
 
 		Out.ar(outBus, out);
@@ -730,6 +737,7 @@ s.waitForBoot({
 		.envRate_(4.0)
 		.envDepth_(0)
 		.grainFreq_(10)
+		.feedbackDecay_(0)
 		.zoom_(0)
 		.buffer_(voiceRecBuf)
 		.outBus_(sidechainBus)
@@ -754,7 +762,7 @@ s.waitForBoot({
 		.play;
 
 		// TODO: DELETE
-		randGrainNote = randGrainSynth.note(target: synthesisGroup)
+		/*randGrainNote = randGrainSynth.note(target: synthesisGroup)
 		.gain_(0)
 		.dur_(sectionThreeDur)
 		.gFreq_(1000)
@@ -763,7 +771,7 @@ s.waitForBoot({
 		.buffer_(voiceRecBuf)
 		.pos_(recPosBus)
 		.outBus_(decoderBus)
-		.play;
+		.play;*/
 
 		OSCdef.new(oscDefKey, {
 			arg msg;
@@ -787,6 +795,7 @@ s.waitForBoot({
 				breathPercNote.envRate_((msg[handOffset + 5].abs / pi).linexp(0, 1, 4.0, 20.0));
 				breathPercNote.envDepth_(msg[handOffset + 9].linlin(0, 0.5, 0, 1));
 				//breathPercNote.zoom_(msg[handOffset + 4].linlin(0, 0.5, 0, pi / 2));
+				breathPercNote.feedbackDecay_(msg[handOffset + 3].linexp(0, 0.3, 0.0001, 3));
 			});
 
 		}, '/LeapMotion', recvPort: 5347);
@@ -794,7 +803,7 @@ s.waitForBoot({
 		sectionThreePulseYield.yield;
 		pulseNote = pulseSynth.note(target: synthesisGroup)
 		.gain_(0)
-		.dur_(sectionThreeDur - sectionThreePulseYield)
+		.dur_(sectionThreeDur - sectionThreePulseYield - 50)
 		.rate_(1)
 		.amp_(1)
 		.pulseBuffer_(pulseBuffer)
@@ -808,9 +817,9 @@ s.waitForBoot({
 	s.sync;
 
 	// Routine Durations & Play ----------------------
-	sectionOneDur = (120 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionOneDur = (100 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionTwoDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionThreeDur = (40 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionThreeDur = (90 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
 
 	scoreRoutine.play;

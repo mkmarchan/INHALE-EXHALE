@@ -6,6 +6,7 @@ s.waitForBoot({
 	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey, positionOSCKey;
 	var sectionOneDur, sectionTwoDur, sectionThreeDur;
 	var sectionThreePulseYield, pulse, pulseRate, startTime;
+	var isPerformance, usingHeadphones, usingMicrophone;
 	// Kernels
 	var diffuseEncoder, omniEncoder, binauralDecoder;
 	var spreadEncoder, stereoDecoder;
@@ -14,6 +15,7 @@ s.waitForBoot({
 	// Busses
 	var voiceSpatializerBus, voicePositionBus, decoderBus;
 	var sidechainBus, sidechainPulseBus, recPosBus, recBus;
+	var alarmABus, alarmBBus, alarmAPosBus, alarmBPosBus;
 	// Groups
 	var positionGroup, synthesisGroup, spatializerGroup, sidechainGroup;
 	var decoderGroup;
@@ -22,16 +24,17 @@ s.waitForBoot({
 	// Synth defs
 	var pulseSynth, decoderSynth, spatializerSynth, positionSynth;
 	var breathSynth, droneSynth, sidechainSynth, breathPercSynth;
-	var recSynth, recPosSynth, randGrainSynth;
+	var recSynth, recPosSynth, randGrainSynth, alarmSynth;
 	// Routines / sections
 	var scoreRoutine, persistentRoutine, pulseBreathRoutine, shepherdSwarmRoutine;
 	var breathPercRoutine;
 	// GUI
 	var window, userView;
 
-	s.record(numChannels:4);
-
 	// Parameters -------------------------------------
+	isPerformance = false;
+	usingHeadphones = if(isPerformance, {false}, {false});
+	usingMicrophone = if(isPerformance, {true}, {false});
 	sndPath = "../res/".resolveRelative;
 	oscDefKey = \synthesisOSC;
 	jerkOSCKey = \jerkTriggerOSC;
@@ -61,6 +64,10 @@ s.waitForBoot({
 	voiceRecBuf = CtkBuffer.buffer(recordingDur * s.sampleRate, 1, s).load;
 
 	// Busses -----------------------------------------
+	alarmABus = CtkAudio.new(4);
+	alarmBBus = CtkAudio.new(4);
+	alarmAPosBus = CtkControl.new(3);
+	alarmBPosBus = CtkControl.new(3);
 	voiceSpatializerBus = CtkAudio.new(4);
 	voicePositionBus = CtkControl.new(3);
 	decoderBus = CtkAudio.new(4);
@@ -92,37 +99,73 @@ s.waitForBoot({
 
 	// Synth Defs -------------------------------------
 	pulseSynth = CtkSynthDef.new(\pulseSynth, {
-		arg gain, dur = 1.0, rate, amp = 0.0, pulseBuffer, outBus, sidechainOutBus;
+		arg gain, dur = 1.0, rate, amp = 0.0, rotation = 0, pulseBuffer, outBus, sidechainOutBus;
 
 		var numBufChannels;
 		var out, env, loopTrigger, grainTrigger, grainDur, grainFreq, pos, pulseFreq, dist;
 
-		gain = Lag2.kr(gain, 0.01);
+		// parameters
 		numBufChannels = 1;
-		grainFreq = 40.22;
+		grainFreq = 10;
 		grainDur = 2 / grainFreq;
 		pulseFreq = rate / BufDur.ir(pulseBuffer);
 		loopTrigger = Impulse.ar(pulseFreq);
 		grainTrigger = Impulse.ar(grainFreq);
-		pos = (Sweep.ar(loopTrigger, pulseFreq) * BufDur.ir(pulseBuffer)).trunc(1 / grainFreq) / BufDur.ir(pulseBuffer);
+		//pos = (Sweep.ar(loopTrigger, pulseFreq) * BufDur.ir(pulseBuffer)).trunc(1 / grainFreq) / BufDur.ir(pulseBuffer);
+		pos = Sweep.ar(loopTrigger, pulseFreq);
 
+		// inputs
+		rate = Lag2.kr(rate, 0.01);
+		gain = Lag2.kr(gain, 0.01);
+
+		// Sample playback
 		out = PlayBuf.ar(numBufChannels, pulseBuffer, rate, loop: 1);
-		//out = GrainBuf.ar(numBufChannels, grainTrigger, grainDur, pulseBuffer, 1,  pos);
-
+		//out = GrainBuf.ar(numBufChannels, grainTrigger, grainDur, pulseBuffer, rate,  pos);
 		Out.ar(sidechainOutBus, out);
 
-		dist = 0.2 * LPF.ar(HPF.ar(CrossoverDistortion.ar(out, amp, 0.5), 100), 100 + (amp.exp - 1 / 1.exp * 20000));
+		// distortion
+		dist = 0.2 * LPF.ar(HPF.ar(CrossoverDistortion.ar(out, amp, 0.8), 100), 100 + (amp.exp - 1 / 1.exp * 20000));
 		out = out + dist;
 
 		// ambisonics
 		//out = FoaEncode.ar(out, diffuseEncoder);
 		out = FoaPanB.ar(out, SinOsc.ar(pulseFreq / 2, 1) * pi / 4);
-
+		out = FoaRotate.ar(out, rotation);
+		// global envelope
 		env = EnvGen.ar(Env([1, 1, 0], [dur, 0.1], 0), doneAction: 2);
-
 		out = out * env;
 
 		Out.ar(outBus, out * gain.dbamp);
+	});
+
+	alarmSynth = CtkSynthDef.new(\alarmSynth, {
+		arg gain = 0.0, dur = 1.0, baseFreq = 400, pitchEnvRate = 3.0, cubeRoomLen = 10.0, outBus, posOutBus;
+
+		var out, pitchEnv, pitchWobble, pitchWobbleFreq, pitchWobbleAmp, pitchEnvAmp;
+		var pos, posTrigger, posTriggerFreq;
+
+		// parameters
+		pitchWobbleFreq = 40;
+		pitchWobbleAmp = 0.08;
+		pitchEnvAmp = 0.15;
+		posTriggerFreq = 0.2;
+
+		// signal
+		pitchWobble = SinOsc.ar(pitchWobbleFreq, 0, pitchWobbleAmp, 1);
+		pitchEnv = LFSaw.ar(pitchEnvRate, 1, pitchEnvAmp, pitchEnvAmp / 2 + 1);
+		out = Saw.ar(baseFreq * pitchWobble * pitchEnv);
+
+		// ambisonics
+		out = FoaPanB.ar(out);
+
+		// positioning
+		posTrigger = Impulse.ar(posTriggerFreq);
+		pos = TRand.ar(cubeRoomLen / -2, cubeRoomLen / 2, [posTrigger, posTrigger, posTrigger]);
+		pos = Lag2.ar(pos, 1 / posTriggerFreq);
+		//pos = LFNoise1.kr([1, 1, 1] * 0.2, cubeRoomLen / 2);
+
+		Out.ar(outBus, out * gain.dbamp);
+		Out.kr(posOutBus, pos);
 	});
 
 	breathSynth = CtkSynthDef.new(\breathSynth, {
@@ -154,10 +197,14 @@ s.waitForBoot({
 		rate = calcFeedbackFromDecayTime.value(tOct, delay, rateTarget);
 
 		// Get the microphone input
-		signal = SoundIn.ar(soundInPort);
-		//signal = PinkNoise.ar(0.5) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], -10, 2, 0));
-		//signal = BPF.ar(PinkNoise.ar(0.5), 880, 1);
-		//signal = SinOsc.ar(200, 0, 0.5);
+		if(usingMicrophone, {
+			signal = SoundIn.ar(soundInPort);
+		}, {
+			signal = 0;
+			//signal = PinkNoise.ar(0.5) * EnvGen.ar(Env([1, 1, 0, 0], [0, 1, 0], -10, 2, 0));
+			//signal = BPF.ar(PinkNoise.ar(0.5), 880, 1);
+			//signal = SinOsc.ar(200, 0, 0.5);
+		});
 
 		// record the microphone input and combine with the feedback
 		localIn = LocalIn.ar(localChannels);
@@ -197,7 +244,12 @@ s.waitForBoot({
 		numVoices = 11;
 
 		// inputs
-		signal = SoundIn.ar(0);//PinkNoise.ar(0.5);//
+		if(usingMicrophone, {
+			signal = SoundIn.ar(0);
+		}, {
+			signal = 0;
+			//signal = PinkNoise.ar(0.5);
+		});
 		soundPos = In.kr(handPosBus, 3);
 
 		// granular synthesis calculations
@@ -234,8 +286,6 @@ s.waitForBoot({
 
 		// feedback
 		out = out + CombC.ar(out, 0.2, 0.1, feedbackDecay, 0.3);
-
-		Poll.ar(impulse, feedbackDecay, 'f');
 
 		Out.ar(recBus, signal);
 		Out.ar(outBus, out);
@@ -318,7 +368,14 @@ s.waitForBoot({
 
 		out = In.ar(inBus, 4);
 		out = FoaRotate.ar(out, pi);
-		//out = FoaDecode.ar(out, binauralDecoder);
+
+		if(isPerformance, {}, {
+			if(usingHeadphones, {
+				out = FoaDecode.ar(out, binauralDecoder);
+			}, {
+				out = FoaDecode.ar(out, stereoDecoder);
+			});
+		});
 
 		Out.ar(outBus, out);
 	});
@@ -376,7 +433,7 @@ s.waitForBoot({
 	// Dan's spatializer
 	spatializerSynth = CtkSynthDef.new(\spatializerSynth, {
 		arg inbus, positionbus, outbus, width, gain = -12,
-		maxMeters = 1000, reverbGain = -18;
+		maxMeters = 1000, reverbGain = -18, useDistance = 0;
 
 		var pos, cartesian, src, amplitude, freq, radialDistance, amp;
 		var phi, theta,  chain, hiFreqAttenCoeff, minAttenDist, lpfDB, speedOfSound;
@@ -416,10 +473,10 @@ s.waitForBoot({
 		// dB/m = freq/100000
 		freq = lpfDB/radialDistance.clip(minAttenDist, maxMeters) * hiFreqAttenCoeff;
 
-		// radialDistance = VarLag.kr(radialDistance);
+		radialDistance = VarLag.kr(radialDistance);
 
 		// the amplitude based on a starting amplitude, amp
-		amplitude = 1;//amp / radialDistance.clip(1, maxMeters);
+		amplitude = (1 - useDistance) + (useDistance * amp / radialDistance.clip(1, maxMeters));
 
 		// lowpass the src and apply envelope and amplitude
 		chain = LPF.ar(src, freq);
@@ -728,11 +785,59 @@ s.waitForBoot({
 
 	breathPercRoutine = Routine({
 		var breathPercNote, pulseNote, randGrainNote, sidechainNote, pulseBuffer;
+		var alarmANote, alarmASpatializerNote, alarmBNote, alarmBSpatializerNote;
 
 		pulseBuffer = sounds[pulse];
 
+		pulseNote = pulseSynth.note(target: synthesisGroup)
+		.gain_(0)
+		.dur_(sectionThreeDur - sectionThreePulseYield)
+		.rate_(1)
+		.amp_(1)
+		.pulseBuffer_(pulseBuffer)
+		.outBus_(decoderBus)
+		.sidechainOutBus_(sidechainPulseBus);
+
+		alarmANote = alarmSynth.note(target: synthesisGroup)
+		.gain_(-5)
+		.dur_(sectionThreeDur - sectionThreePulseYield)
+		.baseFreq_(800)
+		.pitchEnvRate_(10)
+		.cubeRoomLen_(20)
+		.outBus_(alarmABus)
+		.posOutBus_(alarmAPosBus);
+
+		alarmASpatializerNote = spatializerSynth.note(target: spatializerGroup)
+		.inbus_(alarmABus)
+		.positionbus_(alarmAPosBus)
+		.outbus_(sidechainBus)
+		.width_(1)
+		.gain_(0)
+		.maxMeters_(1000)
+		.reverbGain_(-6)
+		.useDistance_(1);
+
+		alarmBNote = alarmSynth.note(target: synthesisGroup)
+		.gain_(-5)
+		.dur_(sectionThreeDur - sectionThreePulseYield)
+		.baseFreq_(600)
+		.pitchEnvRate_(6)
+		.cubeRoomLen_(20)
+		.outBus_(alarmBBus)
+		.posOutBus_(alarmBPosBus);
+
+		alarmBSpatializerNote = spatializerSynth.note(target: spatializerGroup)
+		.inbus_(alarmBBus)
+		.positionbus_(alarmBPosBus)
+		.outbus_(sidechainBus)
+		.width_(1)
+		.gain_(0)
+		.maxMeters_(1000)
+		.reverbGain_(-6)
+		.useDistance_(1);
+
 		breathPercNote = breathPercSynth.note(target: synthesisGroup)
-		.gain_(3)
+		.gain_(0)
 		.dur_(sectionThreeDur)
 		.envRate_(4.0)
 		.envDepth_(0)
@@ -796,31 +901,38 @@ s.waitForBoot({
 				breathPercNote.envDepth_(msg[handOffset + 9].linlin(0, 0.5, 0, 1));
 				//breathPercNote.zoom_(msg[handOffset + 4].linlin(0, 0.5, 0, pi / 2));
 				breathPercNote.feedbackDecay_(msg[handOffset + 3].linexp(0, 0.3, 0.0001, 3));
+
+				// pulse note parameters
+				// roll -> more rotation, faster rate
+				pulseNote.rate_((msg[handOffset + 5].abs / pi).linexp(0.5, 1, 1, 8));
+				// yaw -> azimuth rotation
+				pulseNote.rotation_((msg[handOffset + 7] + (pi / 2)));
 			});
 
 		}, '/LeapMotion', recvPort: 5347);
 
 		sectionThreePulseYield.yield;
-		pulseNote = pulseSynth.note(target: synthesisGroup)
-		.gain_(0)
-		.dur_(sectionThreeDur - sectionThreePulseYield - 50)
-		.rate_(1)
-		.amp_(1)
-		.pulseBuffer_(pulseBuffer)
-		.outBus_(decoderBus)
-		.sidechainOutBus_(sidechainPulseBus)
-		.play;
-
-
+		pulseNote.play;
+		alarmANote.play;
+		alarmASpatializerNote.play;
+		alarmBNote.play;
+		alarmBSpatializerNote.play;
 	});
 
 	s.sync;
 
 	// Routine Durations & Play ----------------------
-	sectionOneDur = (100 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionTwoDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
+	//sectionOneDur = (100 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionOneDur = 0;
+	//sectionTwoDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionTwoDur = 0;
 	sectionThreeDur = (90 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
+	//sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionThreePulseYield = 0;
+
+	if(isPerformance, {
+		s.record(numChannels:4);
+	});
 
 	scoreRoutine.play;
 
@@ -862,9 +974,4 @@ s.waitForBoot({
 		window.close;
 	});
 })
-)
-
-(
-n = NetAddr.new("localhost", NetAddr.langPort);
-n.sendMsg('/tr', "");
 )

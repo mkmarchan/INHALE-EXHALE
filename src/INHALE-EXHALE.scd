@@ -619,11 +619,11 @@ s.waitForBoot({
 			Env(
 				[-3, -3, -60, -60, -3, -3, -60, -60, -3, -3],
 				[
-					sectionOneMuteATime - 0.025,
+					sectionOneMuteATime - 0.02,
 					0.01,
 					sectionOneMuteADur,
 					0.01,
-					sectionOneMuteBTime - sectionOneMuteATime,
+					sectionOneMuteBTime - (sectionOneMuteATime + sectionOneMuteADur) - 0.02,
 					0.01,
 					sectionOneMuteBDur,
 					0.01,
@@ -718,7 +718,7 @@ s.waitForBoot({
 			droneSynth.note(target: synthesisGroup)
 			.gain_(CtkControl.env(
 				Env(
-					[-30, -30, -20],
+					[-25, -25, -20],
 					[timeTilSectionTwo, timeLeftInSectionTwo],
 					-5)))
 			.dur_(endTime - timeElapsed)
@@ -804,11 +804,23 @@ s.waitForBoot({
 	breathPercRoutine = Routine({
 		var breathPercNote, pulseNote, randGrainNote, sidechainNote, pulseBuffer;
 		var alarmANote, alarmASpatializerNote, alarmBNote, alarmBSpatializerNote;
+		var sectionThreeStart;
 
 		pulseBuffer = sounds[shortPulse];
+		sectionThreeStart = sectionOneDur + sectionTwoDur;
 
 		pulseNote = pulseSynth.note(target: synthesisGroup)
-		.gain_(0)
+		.gain_(CtkControl.env(
+			Env(
+				[0, 0, -60, -60, 0, 0],
+				[
+					sectionThreeMuteATime - sectionThreeStart - 0.02 - sectionThreePulseYield,
+					0.01,
+					sectionThreeMuteADur,
+					0.01,
+					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+				],
+				5)))
 		.dur_(sectionThreeDur - sectionThreePulseYield)
 		.rate_(1)
 		.amp_(1)
@@ -817,7 +829,17 @@ s.waitForBoot({
 		.sidechainOutBus_(sidechainPulseBus);
 
 		alarmANote = alarmSynth.note(target: synthesisGroup)
-		.gain_(-7)
+		.gain_(CtkControl.env(
+			Env(
+				[-7, -7, -60, -60, -7, -7],
+				[
+					sectionThreeMuteATime - sectionThreeStart - 0.02 - sectionThreePulseYield,
+					0.01,
+					sectionThreeMuteADur,
+					0.01,
+					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+				],
+				5)))
 		.dur_(sectionThreeDur - sectionThreePulseYield)
 		.baseFreq_(800)
 		.pitchEnvRate_(10)
@@ -836,7 +858,17 @@ s.waitForBoot({
 		.useDistance_(1);
 
 		alarmBNote = alarmSynth.note(target: synthesisGroup)
-		.gain_(-7)
+		.gain_(CtkControl.env(
+			Env(
+				[-7, -7, -60, -60, -7, -7],
+				[
+					sectionThreeMuteATime - sectionThreeStart - 0.02 - sectionThreePulseYield,
+					0.01,
+					sectionThreeMuteADur,
+					0.01,
+					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+				],
+				5)))
 		.dur_(sectionThreeDur - sectionThreePulseYield)
 		.baseFreq_(600)
 		.pitchEnvRate_(6)
@@ -950,7 +982,9 @@ s.waitForBoot({
 	//sectionTwoDur = 0;
 	sectionThreeDur = (90 / sounds[shortPulse].duration).round * sounds[shortPulse].duration;
 	sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionThreePulseYield = 0;
+	//sectionThreePulseYield = 0;
+	sectionThreeMuteATime = sectionOneDur + sectionTwoDur + (sectionThreeDur / 2);
+	sectionThreeMuteADur = 3.2;
 
 	if(isPerformance, {
 		s.record(numChannels:4);
@@ -968,7 +1002,8 @@ s.waitForBoot({
 		var totalTime, progress, sectionTwoNotch, sectionThreeNotch;
 		var sectionThreePauseNotch, sectionOneMuteAStartNotch;
 		var sectionOneMuteAEndNotch, sectionOneMuteBStartNotch;
-		var sectionOneMuteBEndNotch;
+		var sectionOneMuteBEndNotch, sectionThreeMuteAStartNotch;
+		var sectionThreeMuteAEndNotch;
 
 		totalTime = sectionOneDur + sectionTwoDur + sectionThreeDur;
 		progress = (SystemClock.seconds - startTime) / totalTime;
@@ -979,6 +1014,8 @@ s.waitForBoot({
 		sectionOneMuteAEndNotch = sectionOneMuteADur / totalTime + sectionOneMuteAStartNotch;
 		sectionOneMuteBStartNotch = sectionOneMuteBTime / totalTime;
 		sectionOneMuteBEndNotch = sectionOneMuteBDur / totalTime + sectionOneMuteBStartNotch;
+		sectionThreeMuteAStartNotch = sectionThreeMuteATime / totalTime;
+		sectionThreeMuteAEndNotch = sectionThreeMuteADur / totalTime + sectionThreeMuteAStartNotch;
 
 		Pen.fillColor_(Color.black);
 		Pen.fillRect(Rect(0, 0, window.bounds.width, window.bounds.height));
@@ -992,6 +1029,8 @@ s.waitForBoot({
 		Pen.fillRect(Rect(window.bounds.width * sectionOneMuteAEndNotch, 0, 2, window.bounds.height));
 		Pen.fillRect(Rect(window.bounds.width * sectionOneMuteBStartNotch, 0, 2, window.bounds.height));
 		Pen.fillRect(Rect(window.bounds.width * sectionOneMuteBEndNotch, 0, 2, window.bounds.height));
+		Pen.fillRect(Rect(window.bounds.width * sectionThreeMuteAStartNotch, 0, 2, window.bounds.height));
+		Pen.fillRect(Rect(window.bounds.width * sectionThreeMuteAEndNotch, 0, 2, window.bounds.height));
 
 
 	});

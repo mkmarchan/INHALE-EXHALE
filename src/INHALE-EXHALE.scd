@@ -4,7 +4,7 @@ s.options.memSize_(8192 * 16);
 s.waitForBoot({
 	// Parameters
 	var sndPath, oscDefKey, soundInPort, recordingDur, jerkOSCKey, positionOSCKey;
-	var sectionOneDur, sectionTwoDur, sectionThreeDur;
+	var sectionOneDur, sectionTwoDur, sectionThreeDur, sectionFourDur, sectionFiveDur;
 	var sectionOneMuteATime, sectionOneMuteADur;
 	var sectionOneMuteBTime, sectionOneMuteBDur;
 	var sectionThreeMuteATime, sectionThreeMuteADur;
@@ -30,7 +30,7 @@ s.waitForBoot({
 	var recSynth, recPosSynth, randGrainSynth, alarmSynth;
 	// Routines / sections
 	var scoreRoutine, persistentRoutine, pulseBreathRoutine, shepherdSwarmRoutine;
-	var breathPercRoutine;
+	var breathPercRoutine, shepherdSwarmRoutine2, finaleRoutine;
 	// GUI
 	var window, userView;
 
@@ -103,7 +103,7 @@ s.waitForBoot({
 
 	// Synth Defs -------------------------------------
 	pulseSynth = CtkSynthDef.new(\pulseSynth, {
-		arg gain, dur = 1.0, rate, amp = 0.0, rotation = 0, pulseBuffer, outBus, sidechainOutBus;
+		arg gain, dur = 1.0, rate, rateMult = 1.0, amp = 0.0, rotation = 0, pulseBuffer, outBus, sidechainOutBus;
 
 		var numBufChannels;
 		var out, env, loopTrigger, grainTrigger, grainDur, grainFreq, pos, pulseFreq, dist;
@@ -119,7 +119,7 @@ s.waitForBoot({
 		pos = Sweep.ar(loopTrigger, pulseFreq);
 
 		// inputs
-		rate = Lag2.kr(rate, 0.01);
+		rate = Lag2.kr(rate, 0.01) * Lag2.kr(rateMult, 0.01);
 		gain = Lag2.kr(gain, 0.01);
 
 		// Sample playback
@@ -143,7 +143,7 @@ s.waitForBoot({
 	});
 
 	alarmSynth = CtkSynthDef.new(\alarmSynth, {
-		arg gain = 0.0, dur = 1.0, baseFreq = 400, pitchEnvRate = 3.0, cubeRoomLen = 10.0, outBus, posOutBus;
+		arg gain = 0.0, dur = 1.0, baseFreq = 400, pitchEnvRate = 3.0, cubeRoomLen = 10.0, driftRate = 1 / 5, outBus, posOutBus;
 
 		var out, pitchEnv, pitchWobble, pitchWobbleFreq, pitchWobbleAmp, pitchEnvAmp;
 		var pos, posTrigger, posTriggerFreq;
@@ -160,7 +160,8 @@ s.waitForBoot({
 		out = Saw.ar(baseFreq * pitchWobble * pitchEnv);
 
 		// ambisonics
-		out = FoaPanB.ar(out);
+		out = FoaPanB.ar(out, LFNoise2.kr(driftRate, pi / 2), LFNoise2.kr(driftRate, pi / 2));
+		out = FoaReverb.ar(out, LFNoise2.ar(1, 0.3, 0.5), t60low: 1.5, t60high: 1);
 
 		// positioning
 		posTrigger = Impulse.ar(posTriggerFreq);
@@ -293,7 +294,7 @@ s.waitForBoot({
 		out = out + CombC.ar(out, 0.2, 0.1, feedbackDecay, 0.3);
 
 		Out.ar(recBus, signal);
-		Out.ar(outBus, out);
+		Out.ar(outBus, out * gain.dbamp);
 	});
 
 	droneSynth = CtkSynthDef.new(\droneSynth, {
@@ -533,6 +534,15 @@ s.waitForBoot({
 
 		sectionThreeDur.yield;
 		breathPercRoutine.stop;
+		// Section 4: Shepherd Swarm pt. 2
+		"Section 4 Starting".postln;
+		shepherdSwarmRoutine2.play;
+
+		sectionFourDur.yield;
+		shepherdSwarmRoutine2.stop;
+		// Finale: Breath
+		"Section 5 Starting".postln;
+		finaleRoutine.play;
 	});
 
 	persistentRoutine = Routine({
@@ -815,11 +825,18 @@ s.waitForBoot({
 					0.01,
 					sectionThreeMuteADur,
 					0.01,
-					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+					sectionFourDur + sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
 				],
 				5)))
-		.dur_(sectionThreeDur - sectionThreePulseYield)
-		.rate_(1)
+		.dur_(sectionFourDur + sectionThreeDur - sectionThreePulseYield)
+		.rate_(CtkControl.env(
+			Env(
+				[1, 1, 4],
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'exp')))
 		.amp_(1)
 		.pulseBuffer_(pulseBuffer)
 		.outBus_(decoderBus)
@@ -834,14 +851,35 @@ s.waitForBoot({
 					0.01,
 					sectionThreeMuteADur,
 					0.01,
-					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+					sectionFourDur + sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
 				],
 				5)))
-		.dur_(sectionThreeDur - sectionThreePulseYield)
-		.baseFreq_(800)
-		.pitchEnvRate_(10)
-		.cubeRoomLen_(20)
-		.outBus_(alarmABus)
+		.dur_(sectionFourDur + sectionThreeDur - sectionThreePulseYield)
+		.baseFreq_(CtkControl.env(
+			Env(
+				[1, 1, 4] * 800,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'exp')))
+		.pitchEnvRate_(CtkControl.env(
+			Env(
+				[1, 1, 4] * 10,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'exp')))
+		.cubeRoomLen_(CtkControl.env(
+			Env(
+				[1, 1, 0.25] * 5,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'lin')))
+		.outBus_(sidechainBus)
 		.posOutBus_(alarmAPosBus);
 
 		alarmASpatializerNote = spatializerSynth.note(target: spatializerGroup)
@@ -851,7 +889,7 @@ s.waitForBoot({
 		.width_(1)
 		.gain_(0)
 		.maxMeters_(1000)
-		.reverbGain_(-12)
+		.reverbGain_(-8)
 		.useDistance_(1);
 
 		alarmBNote = alarmSynth.note(target: synthesisGroup)
@@ -863,14 +901,35 @@ s.waitForBoot({
 					0.01,
 					sectionThreeMuteADur,
 					0.01,
-					sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
+					sectionFourDur, sectionThreeStart + sectionThreeDur - sectionThreeMuteATime
 				],
 				5)))
-		.dur_(sectionThreeDur - sectionThreePulseYield)
-		.baseFreq_(600)
-		.pitchEnvRate_(6)
-		.cubeRoomLen_(20)
-		.outBus_(alarmBBus)
+		.dur_(sectionFourDur + sectionThreeDur - sectionThreePulseYield)
+		.baseFreq_(CtkControl.env(
+			Env(
+				[1, 1, 4] * 600,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'exp')))
+		.pitchEnvRate_(CtkControl.env(
+			Env(
+				[1, 1, 4] * 60,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'exp')))
+		.cubeRoomLen_(CtkControl.env(
+			Env(
+				[1, 1, 0.25] * 5,
+				[
+					sectionThreeDur - sectionThreePulseYield,
+					sectionFourDur
+				],
+				'lin')))
+		.outBus_(sidechainBus)
 		.posOutBus_(alarmBPosBus);
 
 		alarmBSpatializerNote = spatializerSynth.note(target: spatializerGroup)
@@ -880,12 +939,12 @@ s.waitForBoot({
 		.width_(1)
 		.gain_(0)
 		.maxMeters_(1000)
-		.reverbGain_(-12)
+		.reverbGain_(-8)
 		.useDistance_(1);
 
 		breathPercNote = breathPercSynth.note(target: synthesisGroup)
-		.gain_(-6)
-		.dur_(sectionThreeDur)
+		.gain_(-5)
+		.dur_(sectionFourDur + sectionThreeDur)
 		.envRate_(4.0)
 		.envDepth_(0)
 		.grainFreq_(10)
@@ -902,7 +961,7 @@ s.waitForBoot({
 		.gain_(CtkControl.env(
 				Env(
 					[-10, -10, -60],
-					[sectionThreeDur, 0.05],
+					[sectionThreeDur + sectionFourDur, 0.05],
 					5)))
 		.inBus_(sidechainBus)
 		.pulseBus_(sidechainPulseBus)
@@ -952,7 +1011,7 @@ s.waitForBoot({
 				// pulse note parameters
 				// roll -> more rotation, faster rate
 				//pulseNote.rate_((msg[handOffset + 5].abs / pi).linexp(0.5, 1, 1, 8));
-				pulseNote.rate_((msg[handOffset + 3].linexp(0.2, 0.5, 1, 2)));
+				pulseNote.rateMult_((msg[handOffset + 3].linexp(0.2, 0.5, 1, 2)));
 				// yaw -> azimuth rotation
 				pulseNote.rotation_((msg[handOffset + 7] + (pi / 2)));
 			});
@@ -967,6 +1026,96 @@ s.waitForBoot({
 		alarmBSpatializerNote.play;
 	});
 
+	shepherdSwarmRoutine2 = Routine({
+
+		var host, triggerName, numDronesToFire;
+
+		host = NetAddr.new("localhost", NetAddr.langPort);
+		triggerName = '/simTr';
+		numDronesToFire = 50;
+
+		// should overwrite previous OSCDef
+		// todo: should have different amplitude envelope to make it shepherd like
+		//       gain increase, then decrease
+		// todo: kill make synths go to 0 amp through sidechain synth. timing hard.
+		// todo: speed up rate is too fast
+		// todo: volume sounds weird, maybe modulate the sidechain volume so that it
+		//       increases during the shepherd section and then rapidly drops.
+		OSCdef.new(jerkOSCKey, {
+			arg msg;
+
+			var gFreq, timeElapsed, timeTilSectionFour, timeLeftInSectionFour, endTime;
+			var startAmp, endAmp, bufIndex;
+
+			gFreq = exprand(5, 10);
+			timeElapsed = (SystemClock.seconds - startTime);
+			timeTilSectionFour = max(0, sectionOneDur + sectionTwoDur + sectionThreeDur - timeElapsed);
+			endTime = sectionOneDur + sectionTwoDur + sectionThreeDur + sectionFourDur;
+			timeLeftInSectionFour = min(sectionFourDur, endTime - timeElapsed);
+			startAmp = timeLeftInSectionFour / sectionFourDur * 20 + -35;
+			endAmp = startAmp + 10;
+			bufIndex = timeElapsed / recordingDur;
+
+			droneSynth.note(target: synthesisGroup)
+			.gain_(CtkControl.env(
+				Env(
+					[startAmp, endAmp],
+					timeLeftInSectionFour,
+					-5)))
+			.dur_(endTime - timeElapsed)
+			.gFreq_(CtkControl.env(
+				Env(
+					[1, 8.0] * gFreq,
+					timeLeftInSectionFour,
+					'exp')))
+			.rate_(CtkControl.env(
+				Env(
+					[1.0, 8.0],
+					timeLeftInSectionFour,
+					'exp')))
+			.driftRate_(0.5)
+			.index_(bufIndex)
+			.buffer_(voiceRecBuf)
+			.outBus_(sidechainBus)
+			.play;
+		}, triggerName);
+
+		loop({
+			var timeToWait = sectionFourDur / numDronesToFire + rand(1.0);
+			timeToWait.yield;
+			host.sendMsg(triggerName, "");
+		});
+	});
+
+	finaleRoutine = Routine({
+		var pulseNote, breathNote;
+		var breathSpatializerNote;
+
+		breathNote = breathSynth.note(target: synthesisGroup)
+		.gain_(-8)
+		.dur_(sectionFiveDur)
+		.delay_(1 / 10)
+		.maxDelay_(1.0)
+		.t60_(0)
+		.tOct_(100)
+		.pitchUp_(1.0)
+		.buffer_(voiceRecBuf)
+		.outBus_(voiceSpatializerBus)
+		.recBus_(recBus)
+		.pos_(recPosBus)
+		.play;
+
+		breathSpatializerNote = spatializerSynth.note(target: spatializerGroup)
+		.inbus_(voiceSpatializerBus)
+		.positionbus_(voicePositionBus)
+		.outbus_(decoderBus)
+		.width_(1)
+		.gain_(0)
+		.maxMeters_(1000)
+		.reverbGain_(-12)
+		.play;
+	});
+
 	s.sync;
 
 	// Routine Durations & Play ----------------------
@@ -976,15 +1125,17 @@ s.waitForBoot({
 	sectionOneMuteADur = (4 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionTwoDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
 	//sectionTwoDur = 0;
-	sectionThreeDur = (90 / sounds[shortPulse].duration).round * sounds[shortPulse].duration;
+	sectionThreeDur = (50 / sounds[shortPulse].duration).round * sounds[shortPulse].duration;
 	sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
 	//sectionThreePulseYield = 0;
-	sectionThreeMuteATime = sectionOneDur + sectionTwoDur + (sectionThreeDur / 2);
 	sectionThreeMuteADur = 3.2;
+	sectionThreeMuteATime = sectionOneDur + sectionTwoDur + sectionThreeDur - sectionThreeMuteADur;
+	sectionFourDur = 40;
+	sectionFiveDur = 10;
 
-	/*if(isPerformance, {
+	if(isPerformance, {
 		s.record(numChannels:4);
-	});*/
+	});
 
 	s.sync;
 	scoreRoutine.play;
@@ -995,16 +1146,18 @@ s.waitForBoot({
 	userView = UserView.new(window, Rect(0, 0, window.bounds.width, window.bounds.height));
 	userView.resize = 5;
 	userView.drawFunc_({
-		var totalTime, progress, sectionTwoNotch, sectionThreeNotch;
+		var totalTime, progress, sectionTwoNotch, sectionThreeNotch, sectionFourNotch, sectionFiveNotch;
 		var sectionThreePauseNotch, sectionOneMuteAStartNotch;
 		var sectionOneMuteAEndNotch, sectionThreeMuteAStartNotch;
 		var sectionThreeMuteAEndNotch;
 
-		totalTime = sectionOneDur + sectionTwoDur + sectionThreeDur;
+		totalTime = sectionOneDur + sectionTwoDur + sectionThreeDur + sectionFourDur + sectionFiveDur;
 		progress = (SystemClock.seconds - startTime) / totalTime;
 		sectionTwoNotch = sectionOneDur / totalTime;
 		sectionThreeNotch = sectionTwoDur / totalTime + sectionTwoNotch;
 		sectionThreePauseNotch = sectionThreePulseYield / totalTime + sectionThreeNotch;
+		sectionFourNotch = sectionThreeDur / totalTime + sectionThreeNotch;
+		sectionFiveNotch = sectionFourDur / totalTime + sectionFourNotch;
 		sectionOneMuteAStartNotch = sectionOneMuteATime / totalTime;
 		sectionOneMuteAEndNotch = sectionOneMuteADur / totalTime + sectionOneMuteAStartNotch;
 		sectionThreeMuteAStartNotch = sectionThreeMuteATime / totalTime;
@@ -1022,6 +1175,9 @@ s.waitForBoot({
 		Pen.fillRect(Rect(window.bounds.width * sectionOneMuteAEndNotch, 0, 2, window.bounds.height));
 		Pen.fillRect(Rect(window.bounds.width * sectionThreeMuteAStartNotch, 0, 2, window.bounds.height));
 		Pen.fillRect(Rect(window.bounds.width * sectionThreeMuteAEndNotch, 0, 2, window.bounds.height));
+		Pen.fillRect(Rect(window.bounds.width * sectionFourNotch, 0, 2, window.bounds.height));
+		Pen.fillRect(Rect(window.bounds.width * sectionFiveNotch, 0, 2, window.bounds.height));
+
 
 
 	});

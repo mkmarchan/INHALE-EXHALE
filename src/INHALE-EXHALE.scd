@@ -36,7 +36,7 @@ s.waitForBoot({
 
 	// Parameters -------------------------------------
 	isPerformance = true;
-	usingHeadphones = if(isPerformance, {false}, {false});
+	usingHeadphones = if(isPerformance, {false}, {true});
 	usingMicrophone = if(isPerformance, {true}, {false});
 	sndPath = "../res/".resolveRelative;
 	oscDefKey = \synthesisOSC;
@@ -128,7 +128,7 @@ s.waitForBoot({
 		Out.ar(sidechainOutBus, out);
 
 		// distortion
-		dist = 0.2 * LPF.ar(HPF.ar(CrossoverDistortion.ar(out, amp, 0.8), 100), 100 + (amp.exp - 1 / 1.exp * 20000));
+		dist = 0.2 * LPF.ar(HPF.ar(CrossoverDistortion.ar(out, amp, 0.5), 100), 100 + (amp.exp - 1 / 1.exp * 20000));
 		out = out + dist;
 
 		// ambisonics
@@ -1032,7 +1032,7 @@ s.waitForBoot({
 
 		host = NetAddr.new("localhost", NetAddr.langPort);
 		triggerName = '/simTr';
-		numDronesToFire = 50;
+		numDronesToFire = 35;
 
 		// should overwrite previous OSCDef
 		// todo: should have different amplitude envelope to make it shepherd like

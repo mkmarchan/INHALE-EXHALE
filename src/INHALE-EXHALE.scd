@@ -9,10 +9,10 @@ s.waitForBoot({
 	var sectionOneMuteBTime, sectionOneMuteBDur;
 	var sectionThreeMuteATime, sectionThreeMuteADur;
 	var sectionThreePulseYield, pulse, shortPulse, pulseRate, startTime;
-	var isPerformance, usingHeadphones, usingMicrophone;
+	var isPerformance, usingHeadphones, usingMicrophone, usingQuad;
 	// Kernels
 	var diffuseEncoder, omniEncoder, binauralDecoder;
-	var spreadEncoder, stereoDecoder;
+	var spreadEncoder, stereoDecoder, quadDecoder, uhjDecoder;
 	// Buffers
 	var sounds, voiceRecBuf;
 	// Busses
@@ -36,17 +36,21 @@ s.waitForBoot({
 
 	// Parameters -------------------------------------
 	isPerformance = true;
-	usingHeadphones = if(isPerformance, {false}, {true});
-	usingMicrophone = if(isPerformance, {true}, {false});
+	usingHeadphones = if(isPerformance, {false}, {false});
+	usingMicrophone = if(isPerformance, {true}, {true});
+	usingQuad = true;
 	sndPath = "../res/".resolveRelative;
 	oscDefKey = \synthesisOSC;
 	jerkOSCKey = \jerkTriggerOSC;
 	positionOSCKey = \positionOSC;
 	soundInPort = 0;
 	recordingDur = 60 * 60;
-	pulse = "Pulse3";
-	shortPulse = "Pulse3Short";
+	pulse = if(s.sampleRate == 48000, {"Pulse3_48"}, {"Pulse3"});
+	shortPulse = if(s.sampleRate == 48000, {"Pulse3Short_48"}, {"Pulse3Short"});
 	pulseRate = 1.0;
+
+	pulse.postln;
+	shortPulse.postln;
 
 	// Kernels ----------------------------------------
 	diffuseEncoder = FoaEncoderKernel.newDiffuse;
@@ -54,6 +58,8 @@ s.waitForBoot({
 	spreadEncoder = FoaEncoderKernel.newSpread;
 	binauralDecoder = FoaDecoderKernel.newListen;
 	stereoDecoder = FoaDecoderMatrix.newStereo;
+	quadDecoder = FoaDecoderMatrix.newQuad(30 * pi / 180, 'energy');
+	uhjDecoder = FoaDecoderKernel.newUHJ;
 	s.sync;
 
 	// Buffers ----------------------------------------
@@ -375,11 +381,20 @@ s.waitForBoot({
 		out = In.ar(inBus, 4);
 		out = FoaRotate.ar(out, pi);
 
-		if(isPerformance, {}, {
+		if(isPerformance, {
+			if (usingQuad, {
+				out = FoaDecode.ar(out, quadDecoder) * -5.dbamp;
+			});
+		}, {
 			if(usingHeadphones, {
 				out = FoaDecode.ar(out, binauralDecoder);
 			}, {
-				out = FoaDecode.ar(out, stereoDecoder);
+				//out = FoaDecode.ar(out, stereoDecoder);
+				if(usingQuad, {
+					out = FoaDecode.ar(out, quadDecoder) * -5.dbamp;
+				}, {
+					out = FoaDecode.ar(out, uhjDecoder);
+				});
 			});
 		});
 
@@ -1123,14 +1138,14 @@ s.waitForBoot({
 	//sectionOneDur = 0;
 	sectionOneMuteATime = (sectionOneDur / 2 / sounds[pulse].duration).round * sounds[pulse].duration;
 	sectionOneMuteADur = (4 / sounds[pulse].duration).round * sounds[pulse].duration;
-	sectionTwoDur = (60 / sounds[pulse].duration).round * sounds[pulse].duration;
+	sectionTwoDur = (40 / sounds[pulse].duration).round * sounds[pulse].duration;
 	//sectionTwoDur = 0;
-	sectionThreeDur = (50 / sounds[shortPulse].duration).round * sounds[shortPulse].duration;
+	sectionThreeDur = (30 / sounds[shortPulse].duration).round * sounds[shortPulse].duration;
 	sectionThreePulseYield = (8 / sounds[pulse].duration).round * sounds[pulse].duration;
 	//sectionThreePulseYield = 0;
 	sectionThreeMuteADur = 3.2;
 	sectionThreeMuteATime = sectionOneDur + sectionTwoDur + sectionThreeDur - sectionThreeMuteADur;
-	sectionFourDur = 40;
+	sectionFourDur = 30;
 	sectionFiveDur = 10;
 
 	if(isPerformance, {
